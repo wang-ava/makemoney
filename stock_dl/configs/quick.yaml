@@ -1,0 +1,62 @@
+data_dir: ../documents-export-2026-5-19
+output_dir: outputs_quick
+
+start_date: "20250101"
+end_date: "20250518"
+train_end: "20250331"
+val_end: "20250518"
+
+universe: hs300
+seq_len: 10
+label_horizon: 1
+
+features:
+  use_metric: true
+  use_moneyflow: true
+  use_market: true
+  use_news: true
+  cross_section_rank: true
+  fill_missing: true
+
+model:
+  name: temporal_attention
+  d_model: 64
+  nhead: 4
+  num_layers: 1
+  dim_feedforward: 128
+  head_hidden: 64
+  dropout: 0.15
+
+train:
+  batch_size: 512
+  epochs: 6
+  lr: 0.0008
+  weight_decay: 0.0001
+  early_stop_patience: 3
+  early_stop_metric: val_ic
+  target_col: label_cs_z
+  loss: huber
+  huber_beta: 0.5
+  date_batch: false
+  rank_loss_weight: 0.0
+  direction_loss_weight: 0.0
+  rank_top_frac: 0.2
+  grad_clip: 1.0
+  num_workers: 0
+  seed: 42
+
+strategy:
+  n_hold: 10
+  k_trade: 2
+  initial_cash: 1000000
+  cost_rate: 0.0003
+  slippage: 0.0005
+  auto_tune: true
+  n_hold_grid: [5, 10, 15, 20, 30]
+  k_trade_grid: [1, 2, 3, 5]
+  turnover_penalty: 0.01
+  risk_filter: false
+  max_abs_pct_chg: 9.5
+  min_amount_quantile: 0.05
+  max_volatility_quantile: 0.98
+  min_list_age_years: 0.25

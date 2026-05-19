@@ -1,0 +1,16 @@
+.DS_Store
+__pycache__/
+*.py[cod]
+
+.venv/
+venv/
+env/
+.env
+
+# Large exported datasets and archives.
+/documents-export-2026-5-19/
+/documents-export-2026-5-19.zip
+
+# Generated experiment artifacts.
+/stock_dl/outputs/
+/stock_dl/outputs_quick/

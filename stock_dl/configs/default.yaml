@@ -1,0 +1,73 @@
+data_dir: ../documents-export-2026-5-19
+output_dir: outputs
+
+# quick.yaml 用于本地快速试跑；default.yaml 面向正式训练/报告。
+start_date: "20180101"
+end_date: "20260518"
+train_end: "20241231"
+val_end: "20260518"
+
+# hs300 | all （all = 非ST、非北交所）
+universe: all
+seq_len: 20
+label_horizon: 1
+
+features:
+  use_metric: true
+  use_moneyflow: true
+  use_market: true
+  use_news: true
+  cross_section_rank: true
+  fill_missing: true
+
+# 模型选择：temporal_attention, bilstm_attention, gru_attention, temporal_cnn, inception_time
+model:
+  name: bilstm_attention
+  d_model: 128
+  nhead: 4
+  num_layers: 2
+  dim_feedforward: 256
+  head_hidden: 128
+  dropout: 0.2
+
+train:
+  batch_size: 1024
+  epochs: 30
+  lr: 0.0003
+  weight_decay: 0.0001
+  early_stop_patience: 8
+  early_stop_metric: val_ic
+  target_col: label_cs_z
+  loss: huber
+  huber_beta: 0.5
+  date_batch: true
+  rank_loss_weight: 0.1
+  direction_loss_weight: 0.05
+  rank_top_frac: 0.2
+  label_smoothing: 0.05
+  focal_gamma: 2.0
+  grad_clip: 1.0
+  warmup_epochs: 3
+  num_workers: 4
+  seed: 42
+
+strategy:
+  n_hold: 20
+  k_trade: 3
+  initial_cash: 1000000
+  cost_rate: 0.0003
+  slippage: 0.0005
+  auto_tune: true
+  n_hold_grid: [5, 10, 15, 20, 30, 50]
+  k_trade_grid: [1, 2, 3, 5]
+  turnover_penalty: 0.005
+  risk_filter: true
+  max_abs_pct_chg: 9.5
+  min_amount_quantile: 0.05
+  max_volatility_quantile: 0.98
+  min_list_age_years: 0.25
+  max_mv_quantile: 0.95
+  min_mv_quantile: 0.05
+  max_ret_cut: 8.0
+  use_long_short: false
+  short_ratio: 0.5
