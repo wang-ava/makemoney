@@ -42,7 +42,10 @@ def feature_ic(panel: pd.DataFrame, feat_cols: list[str]) -> pd.DataFrame:
                     "valid_days": valid_days,
                 }
             )
-    return pd.DataFrame(rows).sort_values("abs_ic_mean", ascending=False)
+    columns = ["feature", "ic_mean", "ic_std", "icir", "abs_ic_mean", "valid_days"]
+    if not rows:
+        return pd.DataFrame(columns=columns)
+    return pd.DataFrame(rows, columns=columns).sort_values("abs_ic_mean", ascending=False)
 
 
 def prediction_diagnostics(out: Path) -> None:

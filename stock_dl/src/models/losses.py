@@ -5,6 +5,22 @@ from torch import nn
 from torch.nn import functional as F
 
 
+def ic_loss(pred: torch.Tensor, target: torch.Tensor, eps: float = 1e-8) -> torch.Tensor:
+    """Negative Pearson IC loss for cross-sectional batches."""
+    pred = pred.reshape(-1)
+    target = target.reshape(-1)
+    mask = torch.isfinite(pred) & torch.isfinite(target)
+    pred = pred[mask]
+    target = target[mask]
+    if pred.numel() < 2:
+        return pred.new_tensor(0.0)
+    pred = pred - pred.mean()
+    target = target - target.mean()
+    numerator = (pred * target).sum()
+    denominator = pred.norm() * target.norm()
+    return -(numerator / (denominator + eps))
+
+
 def top_bottom_rank_loss(
     pred: torch.Tensor,
     target: torch.Tensor,

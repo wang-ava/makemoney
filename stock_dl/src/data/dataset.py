@@ -8,6 +8,30 @@ import torch
 from torch.utils.data import Dataset, Sampler
 
 
+REQUIRED_PANEL_COLUMNS = ("ts_code", "trade_date")
+
+
+def normalize_panel_schema(panel: pd.DataFrame, *, context: str = "panel") -> pd.DataFrame:
+    """Return a panel with required identifier columns as ordinary columns."""
+    df = panel.copy()
+    if "ts_code" not in df.columns or "trade_date" not in df.columns:
+        index_names = [name for name in df.index.names if name is not None]
+        if "ts_code" in index_names or "trade_date" in index_names:
+            df = df.reset_index()
+
+    missing = [c for c in REQUIRED_PANEL_COLUMNS if c not in df.columns]
+    if missing:
+        preview = ", ".join(map(str, df.columns[:20]))
+        raise ValueError(
+            f"{context} is missing required columns {missing}. "
+            f"Available first columns: [{preview}]"
+        )
+
+    df["ts_code"] = df["ts_code"].astype(str)
+    df["trade_date"] = df["trade_date"].astype(str)
+    return df
+
+
 class StockWindowDataset(Dataset):
   """Sliding windows with in-window standardization to avoid look-ahead leakage."""
 
@@ -34,8 +58,17 @@ class StockWindowDataset(Dataset):
       self.samples: list[tuple[int, int]] = []
       self.sample_dates: list[str] = []
 
+      panel = normalize_panel_schema(panel, context=f"{split} panel")
+
       if target_col not in panel.columns:
           target_col = raw_label_col
+      required = [target_col, raw_label_col, *feat_cols]
+      missing = [c for c in required if c not in panel.columns]
+      if missing:
+          preview = ", ".join(map(str, missing[:20]))
+          raise ValueError(f"{split} panel is missing required training columns: {preview}")
+      if not feat_cols:
+          raise ValueError("No numeric feature columns were found for training.")
 
       df = panel.copy()
       for code, g in df.groupby("ts_code", sort=False):
@@ -132,8 +165,10 @@ class DateBatchSampler(Sampler[list[int]]):
 
 def save_panel(panel: pd.DataFrame, path: Path) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
+    panel = normalize_panel_schema(panel, context="panel before save")
     panel.to_parquet(path, index=False)
 
 
 def load_panel(path: Path) -> pd.DataFrame:
-    return pd.read_parquet(path)
+    panel = pd.read_parquet(path)
+    return normalize_panel_schema(panel, context=str(path))

@@ -15,7 +15,14 @@ def attach_buyable_flag(scores: pd.DataFrame, panel: pd.DataFrame, strategy_cfg:
         return out
 
     cols = ["trade_date", "ts_code", "pct_chg", "amount"]
-    for optional in ["volatility_20d", "list_age_years", "circ_mv", "turnover_rate", "ret_1d"]:
+    context_cols = [
+        "rank_ret_5d",
+        "ret_5d",
+        "hs300_idx_vol20",
+        "sh_idx_vol20",
+        "volatility_20d",
+    ]
+    for optional in ["volatility_20d", "list_age_years", "circ_mv", "turnover_rate", "ret_1d", *context_cols]:
         if optional in panel.columns:
             cols.append(optional)
 
@@ -60,7 +67,12 @@ def attach_buyable_flag(scores: pd.DataFrame, panel: pd.DataFrame, strategy_cfg:
         risk["buyable"] &= risk["ret_1d"].abs() <= max_ret_cut / 100.0
 
     out["trade_date"] = out["trade_date"].astype(str)
-    out = out.merge(risk[["trade_date", "ts_code", "buyable"]], on=["trade_date", "ts_code"], how="left")
+    keep_context = [c for c in context_cols if c in risk.columns and c not in out.columns]
+    out = out.merge(
+        risk[["trade_date", "ts_code", "buyable", *keep_context]],
+        on=["trade_date", "ts_code"],
+        how="left",
+    )
     out["buyable"] = out["buyable"].fillna(False).astype(bool)
     return out
 

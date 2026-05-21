@@ -20,9 +20,9 @@ features:
   cross_section_rank: true
   fill_missing: true
 
-# 模型选择：temporal_attention, bilstm_attention, gru_attention, temporal_cnn, inception_time
+# 模型选择：gru_transformer, temporal_attention, bilstm_attention, gru_attention, temporal_cnn, inception_time
 model:
-  name: bilstm_attention
+  name: gru_transformer
   d_model: 128
   nhead: 4
   num_layers: 2
@@ -37,8 +37,8 @@ train:
   weight_decay: 0.0001
   early_stop_patience: 8
   early_stop_metric: val_ic
-  target_col: label_cs_z
-  loss: huber
+  target_col: label_rank
+  loss: ic
   huber_beta: 0.5
   date_batch: true
   rank_loss_weight: 0.1
@@ -48,8 +48,40 @@ train:
   focal_gamma: 2.0
   grad_clip: 1.0
   warmup_epochs: 3
-  num_workers: 4
+  num_workers: 0
   seed: 42
+
+lgbm:
+  enabled: true
+  objective: lambdarank
+  num_boost_round: 500
+  early_stopping_rounds: 50
+  ndcg_eval_at: [10, 20, 30]
+  num_leaves: 63
+  learning_rate: 0.05
+  feature_fraction: 0.8
+  bagging_fraction: 0.8
+  bagging_freq: 5
+  min_data_in_leaf: 50
+  lambda_l2: 1.0
+  seed: 42
+
+ensemble:
+  alpha: 0.6
+  alpha_grid: [0.3, 0.4, 0.5, 0.6, 0.7]
+
+wandb:
+  enabled: true
+  entity: avawang1031
+  project: my-awesome-project
+  run_name: stock-dl-full
+  group: finalex
+  mode: online
+  tags: [stock-dl, gru-transformer, lambdarank, finalex]
+  notes: "Stock prediction full pipeline with GRU-Transformer, LambdaRank and dynamic strategy."
+  watch: gradients
+  watch_log_freq: 100
+  log_artifacts: true
 
 strategy:
   n_hold: 20
@@ -69,5 +101,18 @@ strategy:
   max_mv_quantile: 0.95
   min_mv_quantile: 0.05
   max_ret_cut: 8.0
+  adaptive_hold: true
+  adaptive_min_hold: 10
+  adaptive_max_hold: 30
+  adaptive_low_vol_pct: 0.2
+  adaptive_high_vol_pct: 0.8
+  adaptive_lookback: 250
+  momentum_filter: true
+  momentum_rank_col: rank_ret_5d
+  min_momentum_rank: 0.2
+  dynamic_k: true
+  score_gap_low: 0.02
+  score_gap_high: 0.10
+  dynamic_k_step: 2
   use_long_short: false
   short_ratio: 0.5

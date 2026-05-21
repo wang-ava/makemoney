@@ -13,6 +13,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from src.config import load_config
+from src.utils.wandb_utils import finish_wandb, init_wandb, wandb_log_artifact, wandb_log_images
 
 
 def save_training_curve(out: Path, fig_dir: Path) -> None:
@@ -155,6 +156,23 @@ def save_feature_ic_plot(out: Path, fig_dir: Path) -> None:
     plt.close(fig)
 
 
+def save_lgbm_importance_plot(out: Path, fig_dir: Path) -> None:
+    fp = out / "lgbm_feature_importance.csv"
+    if not fp.exists():
+        return
+    imp = pd.read_csv(fp)
+    if imp.empty or "gain" not in imp.columns:
+        return
+    top = imp.sort_values("gain", ascending=False).head(20).sort_values("gain")
+    fig, ax = plt.subplots(figsize=(9, 7))
+    ax.barh(top["feature"], top["gain"], color="#805ad5")
+    ax.set_xlabel("LightGBM feature importance (gain)")
+    ax.grid(axis="x", alpha=0.25)
+    fig.tight_layout()
+    fig.savefig(fig_dir / "lgbm_feature_importance.png", dpi=180)
+    plt.close(fig)
+
+
 def save_strategy_tuning_plot(out: Path, fig_dir: Path) -> None:
     fp = out / "strategy_tuning.csv"
     if not fp.exists():
@@ -219,9 +237,12 @@ def write_summary(out: Path, fig_dir: Path) -> None:
             best = comp.sort_values("total_return", ascending=False).iloc[0]
             lines.extend(["", "## 基线对比", ""])
             lines.append(f"- 最优收益模型: {best['model']} ({best.get('total_return', 0):.2%})")
-            if "deep_temporal_attention" in set(comp["model"]):
-                row = comp[comp["model"] == "deep_temporal_attention"].iloc[0]
-                lines.append(f"- 深度模型 IC mean: {row.get('ic_mean', 0):.6f}, 总收益: {row.get('total_return', 0):.2%}")
+            if "final_model" in set(comp["model"]):
+                row = comp[comp["model"] == "final_model"].iloc[0]
+                lines.append(f"- 最终模型 IC mean: {row.get('ic_mean', 0):.6f}, 总收益: {row.get('total_return', 0):.2%}")
+            if "lgbm_lambdarank" in set(comp["model"]):
+                row = comp[comp["model"] == "lgbm_lambdarank"].iloc[0]
+                lines.append(f"- LightGBM LambdaRank IC mean: {row.get('ic_mean', 0):.6f}, 总收益: {row.get('total_return', 0):.2%}")
     diag_fp = out / "prediction_diagnostics.csv"
     if diag_fp.exists():
         diag = pd.read_csv(diag_fp, index_col=0)["value"].to_dict()
@@ -239,6 +260,7 @@ def write_summary(out: Path, fig_dir: Path) -> None:
         f"- `{fig_dir / 'score_quantiles.png'}`",
         f"- `{fig_dir / 'baseline_comparison.png'}`",
         f"- `{fig_dir / 'feature_ic_top20.png'}`",
+        f"- `{fig_dir / 'lgbm_feature_importance.png'}`",
         f"- `{fig_dir / 'strategy_tuning_heatmap.png'}`",
     ])
     (out / "experiment_summary.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
@@ -259,8 +281,15 @@ def main() -> None:
     save_quantile_plot(out, fig_dir)
     save_baseline_plot(out, fig_dir)
     save_feature_ic_plot(out, fig_dir)
+    save_lgbm_importance_plot(out, fig_dir)
     save_strategy_tuning_plot(out, fig_dir)
     write_summary(out, fig_dir)
+    wandb_run = init_wandb(cfg, job_type="visualize", extra_config={"script": "07_visualize.py"})
+    wandb_log_images(wandb_run, fig_dir)
+    if cfg.get("wandb", {}).get("log_artifacts", True):
+        wandb_log_artifact(wandb_run, out / "experiment_summary.md", name="stock-dl-experiment-summary", artifact_type="report")
+        wandb_log_artifact(wandb_run, fig_dir, name="stock-dl-figures", artifact_type="figures")
+    finish_wandb(wandb_run)
     print(f"Saved figures and summary under {fig_dir}")
 
 

@@ -34,6 +34,9 @@ def tune_strategy(scores: pd.DataFrame, prices: pd.DataFrame, cfg: dict) -> tupl
                 initial_cash=strategy["initial_cash"],
                 cost_rate=strategy.get("cost_rate", 0.0003),
                 slippage=strategy.get("slippage", 0.0005),
+                use_long_short=strategy.get("use_long_short", False),
+                short_ratio=strategy.get("short_ratio", 0.5),
+                strategy_cfg=strategy,
             )
             metrics = result.get("metrics", {})
             row = {"n_hold": int(n_hold), "k_trade": int(k_trade), **metrics}

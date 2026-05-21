@@ -17,6 +17,7 @@ from src.backtest.risk import attach_buyable_flag
 from src.backtest.strategy import save_best_strategy, tune_strategy
 from src.config import load_config
 from src.data.dataset import load_panel
+from src.utils.wandb_utils import finish_wandb, init_wandb, wandb_log, wandb_log_artifact, wandb_summary_update
 
 
 def _curve_metrics(equity: pd.Series) -> dict:
@@ -58,6 +59,17 @@ def add_benchmarks(eq: pd.DataFrame, data_dir: Path, initial_cash: float) -> tup
     return eq, metrics
 
 
+def _flatten_metrics(metrics: dict, prefix: str = "backtest") -> dict[str, float]:
+    flat = {}
+    for key, value in metrics.items():
+        if isinstance(value, dict):
+            for sub_key, sub_value in _flatten_metrics(value, f"{prefix}/{key}").items():
+                flat[sub_key] = sub_value
+        elif isinstance(value, (int, float, np.floating)) and np.isfinite(value):
+            flat[f"{prefix}/{key}"] = float(value)
+    return flat
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", default=str(ROOT / "configs/default.yaml"))
@@ -93,6 +105,9 @@ def main() -> None:
         initial_cash=cfg["strategy"]["initial_cash"],
         cost_rate=cfg["strategy"].get("cost_rate", 0.0003),
         slippage=cfg["strategy"].get("slippage", 0.0005),
+        use_long_short=cfg["strategy"].get("use_long_short", False),
+        short_ratio=cfg["strategy"].get("short_ratio", 0.5),
+        strategy_cfg=cfg["strategy"],
     )
     eq = result["equity_curve"]
     if isinstance(eq, pd.DataFrame) and not eq.empty:
@@ -102,6 +117,15 @@ def main() -> None:
     (out / "backtest_metrics.json").write_text(
         json.dumps(result["metrics"], indent=2), encoding="utf-8"
     )
+    wandb_run = init_wandb(cfg, job_type="backtest", extra_config={"script": "05_backtest.py"})
+    flat_metrics = _flatten_metrics(result["metrics"])
+    wandb_log(wandb_run, flat_metrics)
+    wandb_summary_update(wandb_run, flat_metrics)
+    if cfg.get("wandb", {}).get("log_artifacts", True):
+        wandb_log_artifact(wandb_run, out / "backtest_metrics.json", name="stock-dl-backtest-metrics", artifact_type="metrics")
+        wandb_log_artifact(wandb_run, out / "equity_curve.csv", name="stock-dl-equity-curve", artifact_type="metrics")
+        wandb_log_artifact(wandb_run, out / "strategy_tuning.csv", name="stock-dl-strategy-tuning", artifact_type="metrics")
+    finish_wandb(wandb_run)
     print("Backtest metrics:", result["metrics"])
 
 

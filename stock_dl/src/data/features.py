@@ -10,12 +10,17 @@ RANK_COLS = [
     "ret_5d",
     "ret_20d",
     "mom_20d",
+    "vol_ratio",
     "volatility_20d",
     "turnover_rate",
     "turnover_rate_f",
     "volume_ratio",
+    "volume_ratio_5d",
+    "volume_ratio_20d",
     "net_mf_amount",
+    "net_mf_ratio",
     "mf_ratio",
+    "mf_momentum_3d",
     "circ_mv",
     "total_mv",
     "amount_ma20_ratio",
@@ -120,8 +125,38 @@ def add_features(
     df["trade_date"] = df["trade_date"].astype(str)
     df = df.sort_values(["ts_code", "trade_date"]).reset_index(drop=True)
 
+    if fill_missing:
+        raw_fill_cols = [
+            c
+            for c in [
+                "open",
+                "high",
+                "low",
+                "close",
+                "pre_close",
+                "vol",
+                "amount",
+                "turnover_rate",
+                "turnover_rate_f",
+                "volume_ratio",
+                "pe",
+                "pe_ttm",
+                "pb",
+                "ps",
+                "ps_ttm",
+                "total_mv",
+                "circ_mv",
+            ]
+            if c in df.columns
+        ]
+        if raw_fill_cols:
+            df[raw_fill_cols] = df.groupby("ts_code", sort=False)[raw_fill_cols].ffill(limit=5)
+
     by_code = df.groupby("ts_code", sort=False)
     close_g = by_code["close"]
+
+    if "vol" in df.columns:
+        df["suspended_flag"] = (df["vol"].fillna(0) <= 0).astype(float)
 
     df["ret_1d"] = close_g.pct_change()
     for w in (2, 3, 5, 10, 20, 60):
@@ -133,15 +168,24 @@ def add_features(
     df["intraday_ret"] = df["close"] / df["open"].replace(0, np.nan) - 1.0
     df["overnight_gap"] = df["open"] / df["pre_close"].replace(0, np.nan) - 1.0
     df["hl_spread"] = (df["high"] - df["low"]) / df["close"].replace(0, np.nan)
+    hl_range = (df["high"] - df["low"]).replace(0, np.nan)
     df["upper_shadow"] = (df["high"] - df[["open", "close"]].max(axis=1)) / df["close"].replace(0, np.nan)
     df["lower_shadow"] = (df[["open", "close"]].min(axis=1) - df["low"]) / df["close"].replace(0, np.nan)
+    df["upper_shadow_ratio"] = (df["high"] - df[["open", "close"]].max(axis=1)) / (hl_range + 1e-12)
+    df["lower_shadow_ratio"] = (df[["open", "close"]].min(axis=1) - df["low"]) / (hl_range + 1e-12)
+    df["body_ratio"] = (df["close"] - df["open"]).abs() / (hl_range + 1e-12)
+    df["high_low_ratio"] = (df["high"] - df["low"]) / df["close"].replace(0, np.nan)
+    df["amount_per_vol"] = df["amount"] / df["vol"].replace(0, np.nan)
     if "vwap" in df.columns:
         df["vwap_gap"] = df["close"] / df["vwap"].replace(0, np.nan) - 1.0
+        df["vwap_deviation"] = (df["close"] - df["vwap"]) / df["vwap"].replace(0, np.nan)
 
     ret_g = by_code["ret_1d"]
     for w in (5, 10, 20):
         df[f"volatility_{w}d"] = ret_g.transform(lambda s, win=w: s.rolling(win, min_periods=max(3, win // 2)).std())
         df[f"ret_mean_{w}d"] = ret_g.transform(lambda s, win=w: s.rolling(win, min_periods=max(3, win // 2)).mean())
+    if {"volatility_5d", "volatility_20d"}.issubset(df.columns):
+        df["vol_ratio"] = df["volatility_5d"] / df["volatility_20d"].replace(0, np.nan)
 
     df["log_vol"] = np.log1p(df["vol"].clip(lower=0))
     df["log_amount"] = np.log1p(df["amount"].clip(lower=0))
@@ -151,8 +195,18 @@ def add_features(
         amount_ma = by_code["amount"].transform(lambda s, win=w: s.rolling(win, min_periods=max(2, win // 2)).mean())
         df[f"vol_ma{w}_ratio"] = df["vol"] / vol_ma.replace(0, np.nan)
         df[f"amount_ma{w}_ratio"] = df["amount"] / amount_ma.replace(0, np.nan)
+    if "vol_ma5_ratio" in df.columns:
+        df["volume_ratio_5d"] = df["vol_ma5_ratio"]
+    if "vol_ma20_ratio" in df.columns:
+        df["volume_ratio_20d"] = df["vol_ma20_ratio"]
+    if {"volume_ratio_5d", "volume_ratio_20d"}.issubset(df.columns):
+        df["turnover_change"] = df["volume_ratio_5d"] / df["volume_ratio_20d"].replace(0, np.nan)
 
+    df["rsi_6"] = close_g.transform(lambda s: _rsi(s, 6))
     df["rsi_14"] = close_g.transform(_rsi)
+    ema5 = close_g.transform(lambda s: _ema(s, 5))
+    ema20 = close_g.transform(lambda s: _ema(s, 20))
+    df["ema_5_20_ratio"] = ema5 / ema20.replace(0, np.nan)
     ema12 = close_g.transform(lambda s: _ema(s, 12))
     ema26 = close_g.transform(lambda s: _ema(s, 26))
     df["macd"] = ema12 - ema26
@@ -162,13 +216,21 @@ def add_features(
     std20 = close_g.transform(lambda s: s.rolling(20, min_periods=10).std())
     df["boll_pos"] = (df["close"] - ma20) / (2 * std20 + 1e-12)
     df["boll_width"] = (2 * std20) / (ma20 + 1e-12)
+    lower_band = ma20 - 2 * std20
+    upper_band = ma20 + 2 * std20
+    df["bollinger_pos"] = (df["close"] - lower_band) / (upper_band - lower_band + 1e-12)
     df["limit_up_flag"] = (df["pct_chg"] >= 9.5).astype(float)
     df["limit_down_flag"] = (df["pct_chg"] <= -9.5).astype(float)
 
     if "net_mf_amount" in df.columns and "amount" in df.columns:
         denom = (df["amount"] / 10).replace(0, np.nan)
         df["mf_ratio"] = df["net_mf_amount"] / denom
+        df["net_mf_ratio"] = df["mf_ratio"]
         df["mf_ratio_5d"] = by_code["mf_ratio"].transform(lambda s: s.rolling(5, min_periods=3).mean())
+        df["mf_momentum_3d"] = by_code["net_mf_amount"].transform(lambda s: s.rolling(3, min_periods=2).sum())
+        df["mf_reversal"] = df["net_mf_amount"] - by_code["net_mf_amount"].transform(
+            lambda s: s.rolling(5, min_periods=3).mean()
+        )
 
     flow_cols = ["lg", "elg"]
     if all(f"buy_{c}_amount" in df.columns and f"sell_{c}_amount" in df.columns for c in flow_cols):
@@ -210,7 +272,9 @@ def add_features(
         df["list_age_years"] = (trade_dt - list_dt).dt.days / 365.25
 
     if {"high", "low", "close"}.issubset(df.columns) and {"vol"}.issubset(df.columns):
-        def _calc_indicators(g):
+        def _calc_indicators(g, code):
+            g = g.copy()
+            g["ts_code"] = str(code)
             high = g["high"]
             low = g["low"]
             close = g["close"]
@@ -234,28 +298,46 @@ def add_features(
             g["obv_gap"] = g["obv"] / g["obv_ma10"].replace(0, np.nan) - 1.0
 
             g["atr_14"] = _atr(high, low, close, window=14)
+            g["atr_norm_14"] = g["atr_14"] / close.replace(0, np.nan)
 
             g["momentum_10"] = _momentum(close, window=10)
+            g["roc_10"] = _roc(close, window=10)
             g["roc_12"] = _roc(close, window=12)
+            x = np.arange(5, dtype=float)
+            x_centered = x - x.mean()
+            denom = float((x_centered ** 2).sum())
+            g["obv_slope_5d"] = g["obv"].rolling(5, min_periods=5).apply(
+                lambda y: float(np.dot(x_centered, y - y.mean()) / (denom + 1e-12)),
+                raw=False,
+            )
 
             for c in ["kdj_k", "kdj_d", "kdj_j", "cci_14", "williams_r", "atr_14", "momentum_10"]:
                 g[f"{c}_ma5"] = g[c].rolling(5, min_periods=3).mean()
 
             return g
 
-        df = df.groupby("ts_code", sort=False).apply(_calc_indicators).reset_index(drop=True)
+        indicator_chunks = [
+            _calc_indicators(g, code)
+            for code, g in df.groupby("ts_code", sort=False)
+        ]
+        df = pd.concat(indicator_chunks, ignore_index=True)
 
     if cross_section_rank:
+        derived: dict[str, pd.Series] = {}
         for c in RANK_COLS:
             if c in df.columns:
-                df[f"rank_{c}"] = df.groupby("trade_date")[c].rank(pct=True)
-                df[f"z_{c}"] = _cross_section_z(df, c)
+                derived[f"rank_{c}"] = df.groupby("trade_date")[c].rank(pct=True)
+                derived[f"z_{c}"] = _cross_section_z(df, c)
         if "industry" in df.columns:
             for c in ["ret_5d", "ret_20d", "turnover_rate", "circ_mv", "mf_ratio"]:
                 if c in df.columns:
-                    df[f"ind_rank_{c}"] = df.groupby(["trade_date", "industry"])[c].rank(pct=True)
+                    derived[f"ind_rank_{c}"] = df.groupby(["trade_date", "industry"])[c].rank(pct=True)
+        if derived:
+            df = pd.concat([df, pd.DataFrame(derived, index=df.index)], axis=1)
 
     df = df.copy()
+    by_code = df.groupby("ts_code", sort=False)
+    close_g = by_code["close"]
     horizon = max(int(label_horizon), 1)
     df["label"] = close_g.shift(-horizon) / df["close"] - 1.0
     df["label_direction"] = (df["label"] > 0).astype(float)

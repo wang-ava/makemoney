@@ -9,6 +9,7 @@ from .sequence import TemporalAttentionRegressor
 from .lstm_attention import BiLSTMAttentionRegressor
 from .gru_attention import GRUAttentionRegressor
 from .cnn_temporal import TemporalCNNRegressor, InceptionTimeRegressor
+from .gru_transformer import GRUTransformerRegressor
 
 
 def build_model(model_cfg: dict[str, Any], n_features: int, seq_len: int) -> tuple[nn.Module, bool]:
@@ -57,6 +58,22 @@ def build_model(model_cfg: dict[str, Any], n_features: int, seq_len: int) -> tup
                 dropout=float(model_cfg.get("dropout", 0.15)),
                 nhead=int(model_cfg.get("nhead", 4)),
                 head_hidden=int(model_cfg.get("head_hidden", 128)),
+            ),
+            False,
+        )
+
+    if name in {"gru_transformer", "gru_trans", "hybrid_gru_transformer"}:
+        return (
+            GRUTransformerRegressor(
+                n_features=n_features,
+                seq_len=seq_len,
+                d_model=int(model_cfg.get("d_model", 128)),
+                nhead=int(model_cfg.get("nhead", 4)),
+                num_layers=int(model_cfg.get("num_layers", 2)),
+                dim_feedforward=int(model_cfg.get("dim_feedforward", 256)),
+                dropout=float(model_cfg.get("dropout", 0.1)),
+                head_hidden=int(model_cfg.get("head_hidden", 64)),
+                gru_hidden=int(model_cfg.get("gru_hidden", max(int(model_cfg.get("d_model", 128)) // 2, 1))),
             ),
             False,
         )

@@ -76,8 +76,9 @@ class TemporalCNNRegressor(nn.Module):
         h = h.transpose(1, 2)
 
         for conv in self.conv_layers:
-            h = conv(h) + nn.functional.pad(h, (0, h.size(-1) - h.size(-1)), mode="constant")[:, :, :1] if h.size(-1) < self.seq_len else h
-            h = conv(h)
+            residual = h
+            out = conv(h)
+            h = out + residual if out.shape == residual.shape else out
 
         h = h.transpose(1, 2)
 

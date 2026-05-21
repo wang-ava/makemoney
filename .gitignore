@@ -14,3 +14,7 @@ env/
 # Generated experiment artifacts.
 /stock_dl/outputs/
 /stock_dl/outputs_quick/
+/outputs/
+
+# Local result archives.
+*.zip

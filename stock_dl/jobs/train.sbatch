@@ -1,9 +1,7 @@
 #!/bin/bash
-# USTC 107 本科生算力平台 — 参考:
-# https://xinchengo.github.io/ustc107/guides/ai/deep-learning-homework/
-#SBATCH --job-name=stock-dl-train
-#SBATCH --output=%x_%j.out
-#SBATCH --error=%x_%j.err
+#SBATCH --job-name=stock-dl-full
+#SBATCH --output=logs/%x_%j.out
+#SBATCH --error=logs/%x_%j.err
 #SBATCH --partition=Students
 #SBATCH --qos=qos_stu_medium
 #SBATCH --gres=gpu:1
@@ -13,23 +11,75 @@
 
 set -euo pipefail
 
-# 改成你的路径
-REPO=~/finalex/stock_dl
-DATA=~/finalex/documents-export-2026-5-19
-CONFIG=configs/default.yaml
+# 用法：
+#   cd ~/finalex/finalex/stock_dl
+#   mkdir -p logs
+#   sbatch jobs/train.sbatch
+#
+# 可选：
+#   CONFIG=configs/default.yaml sbatch jobs/train.sbatch
+#   HOLDINGS="000001.SZ,600000.SH" sbatch jobs/train.sbatch
+#   SKIP_PANEL=1 sbatch jobs/train.sbatch      # 已经有 outputs/panel.parquet 时可跳过重建面板
+
+REPO="${REPO:-${SLURM_SUBMIT_DIR:-$HOME/finalex/finalex/stock_dl}}"
+CONFIG="${CONFIG:-configs/default.yaml}"
+CONDA_ENV="${CONDA_ENV:-dl-homework}"
+HOLDINGS="${HOLDINGS:-}"
+SKIP_PANEL="${SKIP_PANEL:-0}"
+export CONFIG
 
 cd "$REPO"
-export PYTHONPATH="$(pwd)"
-export DATA_DIR="$DATA"
+mkdir -p logs
+export PYTHONPATH="$REPO"
+export OMP_NUM_THREADS="${SLURM_CPUS_PER_TASK:-8}"
+export MKL_NUM_THREADS="${SLURM_CPUS_PER_TASK:-8}"
+export WANDB_RUN_ID="${WANDB_RUN_ID:-stockdl-${SLURM_JOB_ID:-$(date +%Y%m%d-%H%M%S)}}"
+export WANDB_RESUME="${WANDB_RESUME:-allow}"
 
-# 激活 conda（按你集群上的环境名修改）
 set +u
-source ~/miniforge3/etc/profile.d/conda.sh
-conda activate dl-homework
+source "$HOME/miniforge3/etc/profile.d/conda.sh"
+conda activate "$CONDA_ENV"
 set -u
 
-# 若 config 里 data_dir 是相对路径，可先 sed 或复制一份集群专用 config
-python scripts/01_build_panel.py --config "$CONFIG"
+echo "== Job info =="
+echo "host: $(hostname)"
+echo "repo: $REPO"
+echo "config: $CONFIG"
+echo "conda env: $CONDA_ENV"
+echo "started at: $(date)"
+python --version
+python - <<'PY'
+import torch
+print("torch:", torch.__version__)
+print("cuda_available:", torch.cuda.is_available())
+if torch.cuda.is_available():
+    print("gpu:", torch.cuda.get_device_name(0))
+PY
+nvidia-smi || true
+
+echo "== Pipeline =="
+if [ "$SKIP_PANEL" != "1" ]; then
+  python scripts/01_build_panel.py --config "$CONFIG"
+else
+  echo "skip panel build"
+fi
+
 python scripts/03_train.py --config "$CONFIG"
+python scripts/10_train_lgbm.py --config "$CONFIG"
+python scripts/11_blend_scores.py --config "$CONFIG"
 python scripts/04_eval_ic.py --config "$CONFIG"
 python scripts/05_backtest.py --config "$CONFIG"
+python scripts/08_baselines.py --config "$CONFIG"
+python scripts/09_diagnostics.py --config "$CONFIG"
+python scripts/07_visualize.py --config "$CONFIG"
+python scripts/06_infer_orders.py --config "$CONFIG" --holdings "$HOLDINGS"
+
+echo "== Done =="
+echo "finished at: $(date)"
+echo "outputs are under: $(python - <<'PY'
+import os
+from src.config import load_config
+cfg = load_config(os.environ["CONFIG"])
+print(cfg["output_dir"])
+PY
+)"

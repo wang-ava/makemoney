@@ -19,7 +19,7 @@ features:
   fill_missing: true
 
 model:
-  name: temporal_attention
+  name: gru_transformer
   d_model: 64
   nhead: 4
   num_layers: 1
@@ -45,6 +45,24 @@ train:
   num_workers: 0
   seed: 42
 
+lgbm:
+  enabled: false
+
+ensemble:
+  alpha: 0.6
+  alpha_grid: [0.4, 0.5, 0.6]
+
+wandb:
+  enabled: false
+  entity: avawang1031
+  project: my-awesome-project
+  run_name: stock-dl-quick
+  group: finalex
+  mode: online
+  tags: [stock-dl, quick]
+  watch: false
+  log_artifacts: false
+
 strategy:
   n_hold: 10
   k_trade: 2
@@ -60,3 +78,6 @@ strategy:
   min_amount_quantile: 0.05
   max_volatility_quantile: 0.98
   min_list_age_years: 0.25
+  adaptive_hold: false
+  momentum_filter: false
+  dynamic_k: false

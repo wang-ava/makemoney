@@ -18,6 +18,7 @@ from src.backtest.strategy import load_best_strategy
 from src.config import load_config
 from src.data.dataset import load_panel
 from src.metrics.ic import daily_ic, ic_summary
+from src.utils.wandb_utils import finish_wandb, init_wandb, wandb_log, wandb_log_artifact, wandb_summary_update
 
 
 def _normalize_by_day(df: pd.DataFrame, col: str) -> pd.Series:
@@ -36,11 +37,24 @@ def build_baseline_scores(panel: pd.DataFrame, out: Path, cfg: dict) -> dict[str
     val["trade_date"] = val["trade_date"].astype(str)
 
     baselines: dict[str, pd.DataFrame] = {}
-    pred_fp = out / "val_predictions.csv"
-    if pred_fp.exists():
-        pred = pd.read_csv(pred_fp)
+    final_fp = out / "val_predictions.csv"
+    if final_fp.exists():
+        pred = pd.read_csv(final_fp)
         pred["trade_date"] = pred["trade_date"].astype(str)
-        baselines["deep_temporal_attention"] = pred[["trade_date", "ts_code", "score"]]
+        baselines["final_model"] = pred[["trade_date", "ts_code", "score"]]
+
+    deep_fp = out / "val_predictions_deep.csv"
+    if deep_fp.exists():
+        pred = pd.read_csv(deep_fp)
+        pred["trade_date"] = pred["trade_date"].astype(str)
+        baselines["deep_sequence"] = pred[["trade_date", "ts_code", "score"]]
+
+    lgbm_fp = out / "lgbm_val_predictions.csv"
+    if lgbm_fp.exists():
+        pred = pd.read_csv(lgbm_fp)
+        pred["trade_date"] = pred["trade_date"].astype(str)
+        score_col = "score_lgbm" if "score_lgbm" in pred.columns else "score"
+        baselines["lgbm_lambdarank"] = pred[["trade_date", "ts_code", score_col]].rename(columns={score_col: "score"})
 
     recipes = {
         "momentum_20d": "ret_20d",
@@ -91,18 +105,29 @@ def evaluate_one(name: str, scores: pd.DataFrame, labels: pd.DataFrame, prices: 
     )
     ic_stats = ic_summary(ic_df)
     bt = run_backtest(
-        scores[["trade_date", "ts_code", "score"]],
+        scores[[c for c in ["trade_date", "ts_code", "score", "buyable"] if c in scores.columns]],
         prices,
         n_hold=n_hold,
         k_trade=k_trade,
         initial_cash=cfg["strategy"]["initial_cash"],
         cost_rate=cfg["strategy"].get("cost_rate", 0.0003),
         slippage=cfg["strategy"].get("slippage", 0.0005),
+        use_long_short=cfg["strategy"].get("use_long_short", False),
+        short_ratio=cfg["strategy"].get("short_ratio", 0.5),
+        strategy_cfg=cfg["strategy"],
     )
     metrics = {
         "model": name,
         "ic_mean": ic_stats.get("ic_mean", 0.0),
         "icir": ic_stats.get("icir", 0.0),
+        "total_return": 0.0,
+        "annual_return": 0.0,
+        "sharpe": 0.0,
+        "max_drawdown": 0.0,
+        "daily_win_rate": 0.0,
+        "turnover": 0.0,
+        "long_return": 0.0,
+        "short_return": 0.0,
         **bt.get("metrics", {}),
     }
     eq = bt.get("equity_curve", pd.DataFrame())
@@ -136,7 +161,9 @@ def main() -> None:
         if not eq.empty:
             equity = eq if equity is None else equity.merge(eq, on="trade_date", how="outer")
 
-    comp = pd.DataFrame(rows).sort_values(["ic_mean", "total_return"], ascending=False)
+    comp = pd.DataFrame(rows)
+    if not comp.empty:
+        comp = comp.sort_values(["ic_mean", "total_return"], ascending=False)
     comp.to_csv(out / "baseline_comparison.csv", index=False)
     if equity is not None:
         equity = equity.sort_values("trade_date")
@@ -145,6 +172,20 @@ def main() -> None:
         json.dumps(comp.to_dict(orient="records"), indent=2, ensure_ascii=False),
         encoding="utf-8",
     )
+    wandb_run = init_wandb(cfg, job_type="baselines", extra_config={"script": "08_baselines.py"})
+    if not comp.empty:
+        best = comp.sort_values(["ic_mean", "total_return"], ascending=False).iloc[0].to_dict()
+        payload = {
+            "baseline/best_ic_mean": float(best.get("ic_mean", 0.0)),
+            "baseline/best_total_return": float(best.get("total_return", 0.0)),
+            "baseline/best_sharpe": float(best.get("sharpe", 0.0)),
+        }
+        wandb_log(wandb_run, payload)
+        wandb_summary_update(wandb_run, payload | {"baseline/best_model": best.get("model", "")})
+    if cfg.get("wandb", {}).get("log_artifacts", True):
+        wandb_log_artifact(wandb_run, out / "baseline_comparison.csv", name="stock-dl-baseline-comparison", artifact_type="metrics")
+        wandb_log_artifact(wandb_run, out / "baseline_equity_curves.csv", name="stock-dl-baseline-equity-curves", artifact_type="metrics")
+    finish_wandb(wandb_run)
     print(comp.to_string(index=False))
 
 
