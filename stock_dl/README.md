@@ -86,6 +86,70 @@ chmod +x run_all.sh
 ./run_all.sh configs/default.yaml
 ```
 
+## 服务器 8 小时默认跑法
+
+如果只想跑一组固定参数，提交：
+
+```bash
+cd stock_dl
+mkdir -p logs
+sbatch jobs/train.sbatch
+```
+
+这会使用 `configs/server_8h.yaml`，输出到 `outputs_server8h/`。该配置保留全市场、完整特征、GRU-Transformer + LightGBM 融合，但把深度模型改成中等宽度、限制训练时间、开启 AMP，并关闭 W&B gradient watch 来省时间。训练脚本会在 `train.max_minutes` 或 sbatch 传入的 `TRAIN_MAX_MINUTES` 到达后优雅停止，保存当前验证集最好的 `model.pt`，再继续跑融合、IC、回测和图表。
+
+`jobs/train.sbatch` 默认 `SKIP_PANEL=auto`：如果 `outputs_server8h/panel.parquet` 已存在，会自动跳过面板重建；如果改了日期、特征或股票池，强制重建：
+
+```bash
+SKIP_PANEL=0 sbatch jobs/train.sbatch
+```
+
+默认预算是：需要重建 panel 时深度模型最多训练 270 分钟；复用已有 panel 时最多训练 330 分钟。想临时加长或缩短：
+
+```bash
+TRAIN_MAX_MINUTES=360 sbatch jobs/train.sbatch
+```
+
+想临时跑更大的正式配置：
+
+```bash
+CONFIG=configs/default.yaml SKIP_PANEL=0 sbatch jobs/train.sbatch
+```
+
+## 自动调参
+
+如果要让服务器自动试参数，以后反复提交这个：
+
+```bash
+cd stock_dl
+mkdir -p logs
+sbatch jobs/tune.sbatch
+```
+
+每次提交会自动选择下一组未跑过的参数，输出到 `outputs_tuning/trials/trial_XXXX/`。第一次会构建一次共享面板 `outputs_tuning/shared_panel/panel.parquet`，后续 trial 会复用它。
+
+调参汇总文件：
+
+| 文件 | 说明 |
+|------|------|
+| `outputs_tuning/tuning_results.csv` | 所有 trial 的参数和指标 |
+| `outputs_tuning/best_params.json` | 当前最佳 trial、指标、完整参数 |
+| `outputs_tuning/best_params.yaml` | 同上，方便复制进配置文件 |
+| `outputs_tuning/best_config.yaml` | 当前最佳 trial 的完整可运行配置 |
+| `outputs_tuning/best_trial` | 指向当前最佳输出目录的软链接 |
+
+默认按验证集 `ic_mean` 选最佳，同时记录回测收益、Sharpe、最大回撤、融合 alpha、最佳 epoch 等。想一次排多个并行 trial：
+
+```bash
+sbatch --array=1-4 jobs/tune.sbatch
+```
+
+想一次提交连续跑 2 组：
+
+```bash
+TRIALS_PER_JOB=2 sbatch jobs/tune.sbatch
+```
+
 ## W&B 实验跟踪
 
 `configs/default.yaml` 已开启 W&B：

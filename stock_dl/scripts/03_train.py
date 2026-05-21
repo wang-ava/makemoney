@@ -3,7 +3,9 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
+import time
 from pathlib import Path
 
 import numpy as np
@@ -38,12 +40,13 @@ def set_seed(seed: int) -> None:
 
 
 @torch.no_grad()
-def predict_dataset(model, loader, device):
+def predict_dataset(model, loader, device, *, amp_enabled: bool = False):
     model.eval()
     preds, labels, codes, dates = [], [], [], []
     for x, _, raw, c, d in loader:
         x = x.to(device)
-        p = model(x).cpu().numpy()
+        with torch.cuda.amp.autocast(enabled=amp_enabled):
+            p = model(x).float().cpu().numpy()
         preds.extend(p.tolist())
         labels.extend(raw.numpy().tolist())
         codes.extend(c)
@@ -69,12 +72,26 @@ def get_scheduler(opt, cfg, num_training_steps):
     return torch.optim.lr_scheduler.LambdaLR(opt, lr_lambda)
 
 
+def save_checkpoint(path: Path, model, feat_cols, cfg, target_col: str, best_metric: float, epoch: int) -> None:
+    torch.save({
+        "model_state": model.state_dict(),
+        "feat_cols": feat_cols,
+        "seq_len": cfg["seq_len"],
+        "model_cfg": cfg["model"],
+        "target_col": target_col,
+        "best_metric": best_metric,
+        "best_epoch": epoch,
+    }, path)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", default=str(ROOT / "configs/default.yaml"))
     args = parser.parse_args()
     cfg = load_config(args.config)
     set_seed(cfg["train"]["seed"])
+    if cfg["train"].get("matmul_precision"):
+        torch.set_float32_matmul_precision(str(cfg["train"]["matmul_precision"]))
 
     panel_path = Path(cfg["output_dir"]) / "panel.parquet"
     panel = load_panel(panel_path)
@@ -116,7 +133,15 @@ def main() -> None:
             "and whether labels are available after feature construction."
         )
 
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     num_workers = int(cfg["train"].get("num_workers", 0))
+    loader_kwargs = {
+        "num_workers": num_workers,
+        "pin_memory": device.type == "cuda",
+    }
+    if num_workers > 0:
+        loader_kwargs["persistent_workers"] = True
+        loader_kwargs["prefetch_factor"] = int(cfg["train"].get("prefetch_factor", 2))
     if cfg["train"].get("date_batch", False):
         sampler = DateBatchSampler(
             train_ds.sample_dates,
@@ -127,25 +152,33 @@ def main() -> None:
         train_loader = DataLoader(
             train_ds,
             batch_sampler=sampler,
-            num_workers=num_workers,
+            **loader_kwargs,
         )
     else:
         train_loader = DataLoader(
             train_ds,
             batch_size=cfg["train"]["batch_size"],
             shuffle=True,
-            num_workers=num_workers,
+            **loader_kwargs,
         )
     val_loader = DataLoader(
         val_ds,
         batch_size=cfg["train"]["batch_size"],
         shuffle=False,
-        num_workers=num_workers,
+        **loader_kwargs,
     )
 
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model.to(device)
     n_params = sum(p.numel() for p in model.parameters())
+    amp_enabled = bool(cfg["train"].get("amp", device.type == "cuda")) and device.type == "cuda"
+    scaler = torch.cuda.amp.GradScaler(enabled=amp_enabled)
+    max_minutes = os.environ.get("TRAIN_MAX_MINUTES") or cfg["train"].get("max_minutes")
+    max_seconds = None if max_minutes in (None, 0, "0") else float(max_minutes) * 60.0
+    train_started = time.monotonic()
+    print(
+        f"device={device}, params={n_params:,}, amp={amp_enabled}, "
+        f"num_workers={num_workers}, max_minutes={max_minutes or 'none'}"
+    )
 
     wandb_run = init_wandb(
         cfg,
@@ -210,22 +243,25 @@ def main() -> None:
         for x, y, raw, _, _ in train_loader:
             x, y, raw = x.to(device), y.to(device), raw.to(device)
             opt.zero_grad()
-            pred = model(x)
-            loss, loss_parts = composite_signal_loss(
-                pred,
-                y,
-                raw,
-                loss_fn,
-                rank_weight=float(cfg["train"].get("rank_loss_weight", 0.0)),
-                direction_weight=float(cfg["train"].get("direction_loss_weight", 0.0)),
-                rank_top_frac=float(cfg["train"].get("rank_top_frac", 0.2)),
-                label_smoothing=label_smoothing,
-                focal_gamma=focal_gamma,
-            )
-            loss.backward()
+            with torch.cuda.amp.autocast(enabled=amp_enabled):
+                pred = model(x)
+                loss, loss_parts = composite_signal_loss(
+                    pred,
+                    y,
+                    raw,
+                    loss_fn,
+                    rank_weight=float(cfg["train"].get("rank_loss_weight", 0.0)),
+                    direction_weight=float(cfg["train"].get("direction_loss_weight", 0.0)),
+                    rank_top_frac=float(cfg["train"].get("rank_top_frac", 0.2)),
+                    label_smoothing=label_smoothing,
+                    focal_gamma=focal_gamma,
+                )
+            scaler.scale(loss).backward()
             if cfg["train"].get("grad_clip", 0):
+                scaler.unscale_(opt)
                 nn.utils.clip_grad_norm_(model.parameters(), float(cfg["train"]["grad_clip"]))
-            opt.step()
+            scaler.step(opt)
+            scaler.update()
             scheduler.step()
             tr_losses.append(loss.item())
             tr_base.append(loss_parts["base_loss"])
@@ -237,11 +273,12 @@ def main() -> None:
         with torch.no_grad():
             for x, y, _, _, _ in val_loader:
                 x, y = x.to(device), y.to(device)
-                va_losses.append(loss_fn(model(x), y).item())
+                with torch.cuda.amp.autocast(enabled=amp_enabled):
+                    va_losses.append(loss_fn(model(x), y).item())
 
         tr_m = float(np.mean(tr_losses))
         va_m = float(np.mean(va_losses)) if va_losses else tr_m
-        val_pred = predict_dataset(model, val_loader, device)
+        val_pred = predict_dataset(model, val_loader, device, amp_enabled=amp_enabled)
         scores = val_pred.rename(columns={"score": "value"})[["trade_date", "ts_code", "value"]]
         labels = val_pred.rename(columns={"label": "value"})[["trade_date", "ts_code", "value"]]
         ic_stats = ic_summary(daily_ic(scores, labels))
@@ -282,7 +319,10 @@ def main() -> None:
         )
 
         current = val_ic if early_metric == "val_ic" else va_m
-        improved = current > best_metric if early_metric == "val_ic" else current < best_metric
+        metric_is_finite = np.isfinite(current)
+        improved = False
+        if metric_is_finite:
+            improved = current > best_metric if early_metric == "val_ic" else current < best_metric
 
         if improved:
             best_metric = current
@@ -296,25 +336,24 @@ def main() -> None:
                     "best_val_icir": float(ic_stats["icir"]),
                 },
             )
-            torch.save({
-                "model_state": model.state_dict(),
-                "feat_cols": feat_cols,
-                "seq_len": cfg["seq_len"],
-                "model_cfg": cfg["model"],
-                "target_col": target_col,
-                "best_metric": best_metric,
-                "best_epoch": epoch + 1,
-            }, ckpt)
+            save_checkpoint(ckpt, model, feat_cols, cfg, target_col, best_metric, epoch + 1)
         else:
             patience += 1
+            if not ckpt.exists():
+                fallback_metric = float(current) if metric_is_finite else float("nan")
+                save_checkpoint(ckpt, model, feat_cols, cfg, target_col, fallback_metric, epoch + 1)
             if patience >= cfg["train"]["early_stop_patience"]:
                 print("Early stop")
                 break
+        if max_seconds is not None and time.monotonic() - train_started >= max_seconds:
+            elapsed_minutes = (time.monotonic() - train_started) / 60.0
+            print(f"Reached train.max_minutes={max_minutes} after {elapsed_minutes:.1f} min; stop gracefully.")
+            break
 
     ckpt_data = torch.load(ckpt, map_location=device, weights_only=True)
     model.load_state_dict(ckpt_data["model_state"])
 
-    val_pred = predict_dataset(model, val_loader, device)
+    val_pred = predict_dataset(model, val_loader, device, amp_enabled=amp_enabled)
     val_pred.to_csv(out_dir / "val_predictions_deep.csv", index=False)
     val_pred.to_csv(out_dir / "val_predictions.csv", index=False)
 

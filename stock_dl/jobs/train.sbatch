@@ -19,13 +19,15 @@ set -euo pipefail
 # 可选：
 #   CONFIG=configs/default.yaml sbatch jobs/train.sbatch
 #   HOLDINGS="000001.SZ,600000.SH" sbatch jobs/train.sbatch
-#   SKIP_PANEL=1 sbatch jobs/train.sbatch      # 已经有 outputs/panel.parquet 时可跳过重建面板
+#   SKIP_PANEL=0 sbatch jobs/train.sbatch      # 强制重建 panel
+#   SKIP_PANEL=1 sbatch jobs/train.sbatch      # 强制复用已有 panel
+#   TRAIN_MAX_MINUTES=360 sbatch jobs/train.sbatch
 
 REPO="${REPO:-${SLURM_SUBMIT_DIR:-$HOME/finalex/finalex/stock_dl}}"
-CONFIG="${CONFIG:-configs/default.yaml}"
+CONFIG="${CONFIG:-configs/server_8h.yaml}"
 CONDA_ENV="${CONDA_ENV:-dl-homework}"
 HOLDINGS="${HOLDINGS:-}"
-SKIP_PANEL="${SKIP_PANEL:-0}"
+SKIP_PANEL="${SKIP_PANEL:-auto}"
 export CONFIG
 
 cd "$REPO"
@@ -58,11 +60,40 @@ PY
 nvidia-smi || true
 
 echo "== Pipeline =="
-if [ "$SKIP_PANEL" != "1" ]; then
+PANEL_PATH="$(python - <<'PY'
+import os
+from pathlib import Path
+from src.config import load_config
+cfg = load_config(os.environ["CONFIG"])
+print(Path(cfg["output_dir"]) / "panel.parquet")
+PY
+)"
+if [ "$SKIP_PANEL" = "auto" ]; then
+  if [ -f "$PANEL_PATH" ]; then
+    SKIP_PANEL_EFFECTIVE=1
+  else
+    SKIP_PANEL_EFFECTIVE=0
+  fi
+else
+  SKIP_PANEL_EFFECTIVE="$SKIP_PANEL"
+fi
+
+if [ "$SKIP_PANEL_EFFECTIVE" != "1" ]; then
   python scripts/01_build_panel.py --config "$CONFIG"
 else
-  echo "skip panel build"
+  echo "skip panel build: $PANEL_PATH"
 fi
+
+if [ -z "${TRAIN_MAX_MINUTES:-}" ]; then
+  if [ "$SKIP_PANEL_EFFECTIVE" = "1" ]; then
+    export TRAIN_MAX_MINUTES="${TRAIN_MAX_MINUTES_SKIP_PANEL:-330}"
+  else
+    export TRAIN_MAX_MINUTES="${TRAIN_MAX_MINUTES_BUILD_PANEL:-270}"
+  fi
+else
+  export TRAIN_MAX_MINUTES
+fi
+echo "train max minutes: $TRAIN_MAX_MINUTES"
 
 python scripts/03_train.py --config "$CONFIG"
 python scripts/10_train_lgbm.py --config "$CONFIG"

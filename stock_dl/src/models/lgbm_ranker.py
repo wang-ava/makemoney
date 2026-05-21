@@ -59,6 +59,8 @@ def train_lambdarank(
         "verbose": -1,
         "seed": int(cfg.get("seed", 42)),
     }
+    if int(cfg.get("num_threads", 0)) > 0:
+        params["num_threads"] = int(cfg["num_threads"])
 
     train_set = lgb.Dataset(
         train_df[feat_cols],
