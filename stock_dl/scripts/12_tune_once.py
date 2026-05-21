@@ -151,6 +151,17 @@ def deep_update(base: dict[str, Any], patch: dict[str, Any]) -> dict[str, Any]:
     return out
 
 
+def resolve_base_paths(base_cfg: dict[str, Any], base_config_path: Path) -> dict[str, Any]:
+    """Resolve paths before writing generated configs outside configs/."""
+    cfg = copy.deepcopy(base_cfg)
+    base_root = base_config_path.resolve().parent.parent
+    data_dir = Path(cfg["data_dir"])
+    if not data_dir.is_absolute():
+        data_dir = (base_root / data_dir).resolve()
+    cfg["data_dir"] = str(data_dir)
+    return cfg
+
+
 def flatten_dict(data: dict[str, Any], prefix: str = "") -> dict[str, Any]:
     flat = {}
     for key, value in data.items():
@@ -321,7 +332,7 @@ def next_candidate(trial_number: int, registry: list[dict[str, Any]], seed: int)
 
 def make_trial_config(base_cfg: dict[str, Any], candidate: dict[str, Any], trial_id: str, trial_dir: Path, max_minutes: str | None) -> dict[str, Any]:
     cfg = deep_update(base_cfg, candidate["overrides"])
-    cfg["output_dir"] = str(trial_dir.relative_to(ROOT))
+    cfg["output_dir"] = str(trial_dir)
     cfg.setdefault("train", {})
     cfg["train"]["epochs"] = int(os.environ.get("TUNE_EPOCHS", cfg["train"].get("epochs", 18)))
     if max_minutes:
@@ -347,7 +358,7 @@ def build_shared_panel(base_cfg: dict[str, Any], tune_dir: Path, force: bool) ->
             print(f"Shared panel exists: {panel_path}")
             return panel_path
         cfg = copy.deepcopy(base_cfg)
-        cfg["output_dir"] = str(shared_dir.relative_to(ROOT))
+        cfg["output_dir"] = str(shared_dir)
         cfg_path = shared_dir / "shared_panel_config.yaml"
         write_yaml(cfg_path, cfg)
         run_step(["python", "scripts/01_build_panel.py", "--config", str(cfg_path.relative_to(ROOT))], "build shared panel")
@@ -556,7 +567,7 @@ def main() -> None:
     base_config_path = (ROOT / args.base_config).resolve()
     tune_dir = (ROOT / args.tune_dir).resolve()
     tune_dir.mkdir(parents=True, exist_ok=True)
-    base_cfg = read_yaml(base_config_path)
+    base_cfg = resolve_base_paths(read_yaml(base_config_path), base_config_path)
 
     shared_panel = build_shared_panel(base_cfg, tune_dir, force=args.force_panel)
     for _ in range(args.trials):
