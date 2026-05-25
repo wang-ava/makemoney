@@ -88,7 +88,20 @@ chmod +x run_all.sh
 
 ## 107 平台 8 小时默认跑法
 
-在 107 平台登录后，建议直接用 sbatch 跑 `configs/server_8h.yaml`。这份配置已对齐当前 best trial：GRU-Transformer 两层、LightGBM LambdaRank、`n_hold=30`、`k_trade=1`、`cash_reserve_ratio=0.2`，即按老师放宽口径保持约 80% 以上仓位。
+首次在 107 平台跑之前，先确认环境装好依赖，尤其是 `lightgbm`：
+
+```bash
+cd stock_dl
+conda activate dl-homework
+pip install -r requirements.txt
+python - <<'PY'
+import lightgbm, torch
+print("lightgbm ok")
+print("cuda:", torch.cuda.is_available())
+PY
+```
+
+之后建议直接用 sbatch 跑 `configs/server_8h.yaml`。这份配置已对齐当前 best trial 的深度模型和策略参数，并启用 LightGBM LambdaRank：GRU-Transformer 两层、`n_hold=30`、`k_trade=1`、`cash_reserve_ratio=0.2`，即按老师放宽口径保持约 80% 以上仓位。
 
 ```bash
 cd stock_dl
@@ -237,4 +250,4 @@ model:
 | IC Mean | 10.83% |
 | ICIR | 1.017 |
 
-注意：`cash_reserve_ratio=0.2` 的主要价值是满足 80% 仓位口径并保留实盘/模拟盘机动现金；它不保证在所有预测文件上提高绝对收益。当前同一组本地预测的复测显示，20%现金通常会改善 Sharpe/回撤，但绝对收益可能小幅下降。
+注意：这次 best-trails 记录里 `lgbm_status.json` 为 `missing_dependency`，所以 59.80% 是深度模型通道结果；107 平台装好 `lightgbm` 后会启用双通道融合。`cash_reserve_ratio=0.2` 的主要价值是满足 80% 仓位口径并保留实盘/模拟盘机动现金；它不保证在所有预测文件上提高绝对收益。当前同一组本地预测的复测显示，20%现金通常会改善 Sharpe/回撤，但绝对收益可能小幅下降。

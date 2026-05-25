@@ -210,6 +210,8 @@ composite_loss = base_loss + rank_loss + direction_loss + focal_loss
 - k_trade = 1（每日换手数）
 - cash_reserve_ratio = 0.2（保留20%现金）
 
+注：该 best trial 的 `lgbm_status.json` 记录为 `missing_dependency`，因此本组数值来自 GRU-Transformer 深度通道；工程代码已实现 LightGBM LambdaRank 和融合脚本，107 平台需安装 `lightgbm` 后再跑完整双通道版本。
+
 ### 4.2 Quick配置结果
 
 Quick验证结果（HS300，约5个月数据）：
