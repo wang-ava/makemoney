@@ -23,87 +23,94 @@ features:
 # 模型选择：gru_transformer, temporal_attention, bilstm_attention, gru_attention, temporal_cnn, inception_time
 model:
   name: gru_transformer
-  d_model: 128
+  d_model: 96
   nhead: 4
   num_layers: 2
-  dim_feedforward: 256
-  head_hidden: 128
-  dropout: 0.2
+  dim_feedforward: 192
+  head_hidden: 96
+  gru_hidden: 48
+  dropout: 0.22
 
 train:
   batch_size: 1024
-  epochs: 30
+  epochs: 18
   lr: 0.0003
   weight_decay: 0.0001
-  early_stop_patience: 8
+  early_stop_patience: 5
   early_stop_metric: val_ic
   target_col: label_rank
   loss: ic
   huber_beta: 0.5
   date_batch: true
-  rank_loss_weight: 0.1
-  direction_loss_weight: 0.05
+  rank_loss_weight: 0.08
+  direction_loss_weight: 0.03
   rank_top_frac: 0.2
-  label_smoothing: 0.05
-  focal_gamma: 2.0
+  label_smoothing: 0.0
+  focal_gamma: 0.0
   grad_clip: 1.0
   warmup_epochs: 3
-  num_workers: 0
+  num_workers: 4
+  prefetch_factor: 2
+  amp: true
+  matmul_precision: high
+  max_minutes: 330
   seed: 42
 
 lgbm:
   enabled: true
   objective: lambdarank
-  num_boost_round: 500
-  early_stopping_rounds: 50
+  num_boost_round: 300
+  early_stopping_rounds: 35
   ndcg_eval_at: [10, 20, 30]
-  num_leaves: 63
-  learning_rate: 0.05
+  num_leaves: 31
+  learning_rate: 0.04
   feature_fraction: 0.8
   bagging_fraction: 0.8
   bagging_freq: 5
-  min_data_in_leaf: 50
-  lambda_l2: 1.0
+  min_data_in_leaf: 80
+  lambda_l2: 2.0
+  num_threads: 16
+  log_period: 20
   seed: 42
 
 ensemble:
-  alpha: 0.6
-  alpha_grid: [0.3, 0.4, 0.5, 0.6, 0.7]
+  alpha: 0.55
+  alpha_grid: [0.35, 0.45, 0.55, 0.65, 0.75]
 
 wandb:
   enabled: true
   entity: avawang1031
   project: my-awesome-project
-  run_name: stock-dl-full
+  run_name: stock-dl-full-best-trial
   group: finalex
   mode: online
-  tags: [stock-dl, gru-transformer, lambdarank, finalex]
-  notes: "Stock prediction full pipeline with GRU-Transformer, LambdaRank and dynamic strategy."
-  watch: gradients
-  watch_log_freq: 100
+  tags: [stock-dl, gru-transformer, lambdarank, finalex, best-trial]
+  notes: "Best-trial full pipeline with GRU-Transformer, LambdaRank and 80% compliant dynamic strategy."
+  watch: false
+  watch_log_freq: 200
   log_artifacts: true
 
 strategy:
-  n_hold: 20
-  k_trade: 3
+  n_hold: 30
+  k_trade: 1
   initial_cash: 1000000
   cost_rate: 0.0003
   slippage: 0.0005
   auto_tune: true
-  n_hold_grid: [5, 10, 15, 20, 30, 50]
-  k_trade_grid: [1, 2, 3, 5]
+  n_hold_grid: [10, 15, 20, 30, 40, 50]
+  k_trade_grid: [1, 2, 3]
   turnover_penalty: 0.005
   risk_filter: true
   max_abs_pct_chg: 9.5
   min_amount_quantile: 0.05
   max_volatility_quantile: 0.98
   min_list_age_years: 0.25
-  max_mv_quantile: 0.95
-  min_mv_quantile: 0.05
+  max_mv_quantile: 0.99
+  min_mv_quantile: 0.02
   max_ret_cut: 8.0
   adaptive_hold: true
-  adaptive_min_hold: 10
-  adaptive_max_hold: 30
+  adaptive_min_hold: 15
+  adaptive_max_hold: 50
   adaptive_low_vol_pct: 0.2
   adaptive_high_vol_pct: 0.8
   adaptive_lookback: 250
@@ -116,3 +123,6 @@ strategy:
   dynamic_k_step: 2
   use_long_short: false
   short_ratio: 0.5
+  cash_reserve_ratio: 0.2
+  use_risk_parity: false
+  max_positions_per_industry: 5

@@ -71,6 +71,7 @@ def run_backtest(
     use_long_short: bool = False,
     short_ratio: float = 0.5,
     strategy_cfg: dict | None = None,
+    cash_reserve_ratio: float = 0.0,
 ) -> dict:
     """
     scores: trade_date, ts_code, score
@@ -85,6 +86,7 @@ def run_backtest(
         return {"equity_curve": [], "metrics": {}}
 
     strategy_cfg = strategy_cfg or {}
+    cash_reserve_ratio = float(np.clip(cash_reserve_ratio, 0.0, 0.95))
     holdings: dict[str, float] = {}
     short_holdings: dict[str, float] = {}
     cash = initial_cash
@@ -143,7 +145,8 @@ def run_backtest(
 
         if not holdings:
             picks = buy_scores.nlargest(n_long).index.tolist()
-            per = cash / max(len(picks), 1)
+            available_cash = cash * (1 - cash_reserve_ratio)
+            per = available_cash / max(len(picks), 1)
             for code in picks:
                 p = open_pivot.at[exec_date, code] if code in open_pivot.columns else np.nan
                 if np.isfinite(p) and p > 0:
@@ -182,7 +185,8 @@ def run_backtest(
                     total_turnover += gross
 
             if buy_codes:
-                per = cash / len(buy_codes)
+                available_cash = cash * (1 - cash_reserve_ratio)
+                per = available_cash / len(buy_codes)
                 for code in buy_codes:
                     p = open_pivot.at[exec_date, code] if code in open_pivot.columns else np.nan
                     if np.isfinite(p) and p > 0:
@@ -227,15 +231,18 @@ def run_backtest(
                 short_mv += sh * p
 
         total_equity = mv + cash + short_mv + short_cash
+        long_equity = mv + cash
+        position_ratio = mv / long_equity if long_equity > 0 else 0.0
 
         equity_curve.append(
             {
                 "trade_date": exec_date,
                 "signal_date": d,
                 "equity": total_equity,
-                "long_equity": mv + cash,
+                "long_equity": long_equity,
                 "short_equity": short_mv + short_cash,
                 "cash": cash,
+                "position_ratio": position_ratio,
                 "short_cash": short_cash,
                 "n_positions": len(holdings),
                 "n_short_positions": len(short_holdings),
@@ -276,5 +283,8 @@ def run_backtest(
             "turnover": float(total_turnover / initial_cash),
             "long_return": float(long_return),
             "short_return": float(short_return),
+            "min_position_ratio": float(eq["position_ratio"].min()),
+            "median_position_ratio": float(eq["position_ratio"].median()),
+            "cash_reserve_ratio": float(cash_reserve_ratio),
         },
     }

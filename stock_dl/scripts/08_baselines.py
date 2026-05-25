@@ -115,6 +115,7 @@ def evaluate_one(name: str, scores: pd.DataFrame, labels: pd.DataFrame, prices: 
         use_long_short=cfg["strategy"].get("use_long_short", False),
         short_ratio=cfg["strategy"].get("short_ratio", 0.5),
         strategy_cfg=cfg["strategy"],
+        cash_reserve_ratio=cfg["strategy"].get("cash_reserve_ratio", 0.0),
     )
     metrics = {
         "model": name,

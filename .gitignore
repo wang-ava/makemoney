@@ -18,3 +18,11 @@ env/
 
 # Local result archives.
 *.zip
+
+# Large local best-trial artifacts; keep metrics, configs and figures tracked.
+/best-trails/.DS_Store
+/best-trails/model.pt
+/best-trails/val_predictions*.csv
+
+# Local W&B export.
+Untitled Report _ my-awesome-project*.pdf

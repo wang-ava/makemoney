@@ -1,16 +1,12 @@
-data_dir: ../documents-export-2026-5-19
-output_dir: outputs_server8h
-
-# 服务器 8 小时窗口默认配置：对齐当前 best trial，质量优先，并给后处理和可视化留出余量。
-start_date: "20180101"
-end_date: "20260518"
-train_end: "20241231"
-val_end: "20260518"
-
+data_dir: /home/scc/pb23061103/finalex/finalex/documents-export-2026-5-19
+output_dir: /home/scc/pb23061103/finalex/finalex/stock_dl/outputs_tuning/trials/trial_0006
+start_date: '20180101'
+end_date: '20260518'
+train_end: '20241231'
+val_end: '20260518'
 universe: all
 seq_len: 20
 label_horizon: 1
-
 features:
   use_metric: true
   use_moneyflow: true
@@ -18,7 +14,6 @@ features:
   use_news: true
   cross_section_rank: true
   fill_missing: true
-
 model:
   name: gru_transformer
   d_model: 96
@@ -28,7 +23,6 @@ model:
   head_hidden: 96
   gru_hidden: 48
   dropout: 0.22
-
 train:
   batch_size: 1024
   epochs: 18
@@ -51,15 +45,17 @@ train:
   prefetch_factor: 2
   amp: true
   matmul_precision: high
-  max_minutes: 330
+  max_minutes: 330.0
   seed: 42
-
 lgbm:
   enabled: true
   objective: lambdarank
   num_boost_round: 300
   early_stopping_rounds: 35
-  ndcg_eval_at: [10, 20, 30]
+  ndcg_eval_at:
+  - 10
+  - 20
+  - 30
   num_leaves: 31
   learning_rate: 0.04
   feature_fraction: 0.8
@@ -70,24 +66,34 @@ lgbm:
   num_threads: 16
   log_period: 20
   seed: 42
-
 ensemble:
   alpha: 0.55
-  alpha_grid: [0.35, 0.45, 0.55, 0.65, 0.75]
-
+  alpha_grid:
+  - 0.35
+  - 0.45
+  - 0.55
+  - 0.65
+  - 0.75
 wandb:
   enabled: true
   entity: avawang1031
   project: my-awesome-project
-  run_name: stock-dl-server8h
-  group: finalex
+  run_name: stock-dl-tune-trial_0006-gt96_two_layer_ic
+  group: finalex-tune
   mode: online
-  tags: [stock-dl, server-8h, gru-transformer, lambdarank, finalex]
-  notes: "8-hour best-trial preset: GRU-Transformer, LambdaRank and 80% compliant dynamic strategy."
+  tags:
+  - stock-dl
+  - server-8h
+  - gru-transformer
+  - lambdarank
+  - finalex
+  - tune
+  - trial_0006
+  - gt96_two_layer_ic
+  notes: 'Auto tuning trial trial_0006: gt96_two_layer_ic'
   watch: false
   watch_log_freq: 200
   log_artifacts: true
-
 strategy:
   n_hold: 30
   k_trade: 1
@@ -95,20 +101,29 @@ strategy:
   cost_rate: 0.0003
   slippage: 0.0005
   auto_tune: true
-  n_hold_grid: [10, 15, 20, 30, 40, 50]
-  k_trade_grid: [1, 2, 3]
+  n_hold_grid:
+  - 10
+  - 15
+  - 20
+  - 30
+  - 40
+  - 50
+  k_trade_grid:
+  - 1
+  - 2
+  - 3
   turnover_penalty: 0.005
   risk_filter: true
   max_abs_pct_chg: 9.5
   min_amount_quantile: 0.05
   max_volatility_quantile: 0.98
   min_list_age_years: 0.25
-  max_mv_quantile: 0.99
-  min_mv_quantile: 0.02
+  max_mv_quantile: 0.99  # 放宽到99%分位数，允许更多中小盘股票
+  min_mv_quantile: 0.02  # 降低到2%，排除极端小市值
   max_ret_cut: 8.0
   adaptive_hold: true
   adaptive_min_hold: 15
-  adaptive_max_hold: 50
+  adaptive_max_hold: 50  # 扩大最大持仓
   adaptive_low_vol_pct: 0.2
   adaptive_high_vol_pct: 0.8
   adaptive_lookback: 250
@@ -117,10 +132,11 @@ strategy:
   min_momentum_rank: 0.2
   dynamic_k: true
   score_gap_low: 0.02
-  score_gap_high: 0.10
+  score_gap_high: 0.1
   dynamic_k_step: 2
   use_long_short: false
   short_ratio: 0.5
-  cash_reserve_ratio: 0.2
-  use_risk_parity: false
-  max_positions_per_industry: 5
+  cash_reserve_ratio: 0.2  # 最多保留20%现金（放宽满仓标准到80%）
+  # 新增参数
+  use_risk_parity: false  # 风险平价仓位管理（可选）
+  max_positions_per_industry: 5  # 单行业最大持仓数

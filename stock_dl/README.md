@@ -19,11 +19,11 @@
 - **Temporal CNN + Inception**: 多尺度卷积特征提取
 - **TemporalAttentionRegressor**: Transformer编码器（原有）
 
-### 特征工程（200+个特征）
-- 量价技术指标：RSI、MACD、布林带
-- **新增指标**：KDJ、CCI、Williams%R、OBV、ATR、Momentum、ROC、EMA比、OBV斜率、VWAP偏离
-- 资金流特征：净流入比、主动买入比率、smart money
-- 横截面rank与z-score
+### 特征工程（250+个特征）
+- 量价技术指标：多周期收益、波动率、RSI、MACD、布林带、KDJ、CCI、Williams%R、OBV、ATR、Momentum、ROC
+- 增强指标：Stochastic、ADX、Supertrend、PSY、量能突变、持续放量、价格区间位置
+- 资金流/估值/规模：主力资金、smart money、active money、PE/PB/PS、EP/BP、市值与行业相对估值
+- 横截面 rank、z-score、行业内 rank 与规模中性特征
 
 ### 损失函数优化
 - Huber Loss（稳健）
@@ -53,7 +53,7 @@ stock_dl/
 │   ├── 06_infer_orders.py      # 推理下单
 │   ├── 07_visualize.py        # 可视化
 │   ├── 08_baselines.py         # 基线对比
-│   └── 09_diagnostics.py       # 诊断
+│   ├── 09_diagnostics.py       # 诊断
 │   ├── 10_train_lgbm.py        # LightGBM LambdaRank
 │   └── 11_blend_scores.py      # 深度模型 + LGBM 融合
 ├── src/
@@ -82,13 +82,13 @@ wandb login
 chmod +x run_all.sh
 ./run_all.sh configs/quick.yaml
 
-# 正式训练（需GPU或107平台）
+# 正式训练（需GPU或107平台；默认对齐 best trial）
 ./run_all.sh configs/default.yaml
 ```
 
-## 服务器 8 小时默认跑法
+## 107 平台 8 小时默认跑法
 
-如果只想跑一组固定参数，提交：
+在 107 平台登录后，建议直接用 sbatch 跑 `configs/server_8h.yaml`。这份配置已对齐当前 best trial：GRU-Transformer 两层、LightGBM LambdaRank、`n_hold=30`、`k_trade=1`、`cash_reserve_ratio=0.2`，即按老师放宽口径保持约 80% 以上仓位。
 
 ```bash
 cd stock_dl
@@ -96,7 +96,7 @@ mkdir -p logs
 sbatch jobs/train.sbatch
 ```
 
-这会使用 `configs/server_8h.yaml`，输出到 `outputs_server8h/`。该配置保留全市场、完整特征、GRU-Transformer + LightGBM 融合，但把深度模型改成中等宽度、限制训练时间、开启 AMP，并关闭 W&B gradient watch 来省时间。训练脚本会在 `train.max_minutes` 或 sbatch 传入的 `TRAIN_MAX_MINUTES` 到达后优雅停止，保存当前验证集最好的 `model.pt`，再继续跑融合、IC、回测和图表。
+这会输出到 `outputs_server8h/`。训练脚本会在 `train.max_minutes` 或 sbatch 传入的 `TRAIN_MAX_MINUTES` 到达后优雅停止，保存当前验证集最好的 `model.pt`，再继续跑融合、IC、回测、基线对比、图表和下单清单。
 
 `jobs/train.sbatch` 默认 `SKIP_PANEL=auto`：如果 `outputs_server8h/panel.parquet` 已存在，会自动跳过面板重建；如果改了日期、特征或股票池，强制重建：
 
@@ -110,10 +110,17 @@ SKIP_PANEL=0 sbatch jobs/train.sbatch
 TRAIN_MAX_MINUTES=360 sbatch jobs/train.sbatch
 ```
 
-想临时跑更大的正式配置：
+想临时跑正式配置：
 
 ```bash
 CONFIG=configs/default.yaml SKIP_PANEL=0 sbatch jobs/train.sbatch
+```
+
+查看运行日志：
+
+```bash
+tail -f logs/stock-dl-full_<jobid>.out
+tail -f logs/stock-dl-full_<jobid>.err
 ```
 
 ## 自动调参
@@ -177,9 +184,9 @@ wandb:
 ```yaml
 model:
   name: gru_transformer  # 可选: gru_transformer, temporal_attention, bilstm_attention, gru_attention, temporal_cnn, inception_time
-  d_model: 128
+  d_model: 96
   num_layers: 2
-  dropout: 0.2
+  dropout: 0.22
 ```
 
 `default.yaml` 默认启用 LightGBM；如果本机未安装 `lightgbm`，脚本会自动跳过该通道并使用深度模型分数。安装 `requirements.txt` 后会生成 `lgbm_val_predictions.csv`、`blend_alpha_search.csv` 和 `val_predictions_blend.csv`。
@@ -188,7 +195,7 @@ model:
 
 | 文件 | 说明 |
 |------|------|
-| `outputs/panel.parquet` | 合并后面板（192特征） |
+| `outputs/panel.parquet` | 合并后面板（250+特征） |
 | `outputs/model.pt` | 模型权重 |
 | `outputs/val_predictions.csv` | 验证集预测 |
 | `outputs/val_predictions_deep.csv` | 深度时序模型预测 |
@@ -210,9 +217,24 @@ model:
 
 | 模块 | 分数 | 改进 |
 |------|------|------|
-| 算法合理性 | 10% | 192特征、增强风控 |
-| **创新性** | **15%** | **多模型架构** |
-| 模型效果 | 20% | 验证IC、回测收益 |
+| 算法合理性 | 10% | 全市场面板、250+特征、时间切分、防泄露标准化 |
+| **创新性** | **15%** | **GRU-Transformer、LambdaRank、融合与动态调仓** |
+| 模型效果 | 20% | 验证IC、回测收益、基准对比 |
 | 报告 | 25% | 完整报告结构 |
-| 规范依从性 | 10% | 防泄露机制 |
+| 规范依从性 | 10% | 防泄露机制、涨跌停/流动性过滤、约80%仓位合规 |
 | 可复现性 | 5% | 代码清晰、README完整 |
+
+## 当前 best trial 结果
+
+`best-trails/` 保存了当前最佳实验记录：验证期为 2025-01-02 至 2026-05-15，回测交易日至 2026-05-18。
+
+| 指标 | 结果 |
+|------|------|
+| 总收益 | 59.80% |
+| 年化收益 | 43.35% |
+| Sharpe | 1.605 |
+| 最大回撤 | -18.41% |
+| IC Mean | 10.83% |
+| ICIR | 1.017 |
+
+注意：`cash_reserve_ratio=0.2` 的主要价值是满足 80% 仓位口径并保留实盘/模拟盘机动现金；它不保证在所有预测文件上提高绝对收益。当前同一组本地预测的复测显示，20%现金通常会改善 Sharpe/回撤，但绝对收益可能小幅下降。

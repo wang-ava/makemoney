@@ -81,3 +81,4 @@ strategy:
   adaptive_hold: false
   momentum_filter: false
   dynamic_k: false
+  cash_reserve_ratio: 0.2

@@ -1,0 +1,30 @@
+{
+  "total_return": 0.5979709575594798,
+  "annual_return": 0.4335091932217867,
+  "sharpe": 1.6048452119213197,
+  "max_drawdown": -0.184100542746918,
+  "daily_win_rate": 0.6036585365853658,
+  "turnover": 133.73546067677282,
+  "long_return": 0.5979709575594798,
+  "short_return": 0.0,
+  "benchmarks": {
+    "bench_sh": {
+      "total_return": 0.2865071723969439,
+      "annual_return": 0.2135581793563821,
+      "sharpe": 1.4964557516452481,
+      "max_drawdown": -0.09714474715470567
+    },
+    "bench_hs300": {
+      "total_return": 0.2803477347531953,
+      "annual_return": 0.20909178105188597,
+      "sharpe": 1.3262973323476404,
+      "max_drawdown": -0.10491515567427623
+    },
+    "bench_cyb": {
+      "total_return": 0.9419341218415718,
+      "annual_return": 0.665131174781193,
+      "sharpe": 1.9371768973857222,
+      "max_drawdown": -0.20789096948786334
+    }
+  }
+}
