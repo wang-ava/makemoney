@@ -208,7 +208,10 @@ composite_loss = base_loss + rank_loss + direction_loss + focal_loss
 #### 最优策略参数
 - n_hold = 30（持仓数量）
 - k_trade = 1（每日换手数）
-- cash_reserve_ratio = 0.2（保留20%现金）
+- dynamic_position = true（动态目标仓位）
+- min_position_ratio = 0.80（80%为合规底线，不是固定仓位）
+- position_floor_buffer = 0.02（执行缓冲，避免手续费和价格波动导致低于底线）
+- base_position_ratio = 0.90，max_position_ratio = 1.00
 
 注：该 best trial 的 `lgbm_status.json` 记录为 `missing_dependency`，因此本组数值来自 GRU-Transformer 深度通道；工程代码已实现 LightGBM LambdaRank 和融合脚本，107 平台需安装 `lightgbm` 后再跑完整双通道版本。
 
@@ -280,15 +283,19 @@ Quick验证结果（HS300，约5个月数据）：
 |------|--------|------|
 | n_hold | 30 | 持仓数量，grid: [10,15,20,30,40,50] |
 | k_trade | 1 | 每日换手数，grid: [1,2,3] |
-| cash_reserve_ratio | 0.2 | 保留现金比例（合规80%仓位） |
 | adaptive_hold | true | 波动率自适应持仓 |
 | adaptive_min_hold | 15 | 最小持仓数 |
 | adaptive_max_hold | 50 | 最大持仓数 |
 | dynamic_k | true | 动态换手数 |
+| dynamic_position | true | 动态目标仓位 |
+| min_position_ratio | 0.80 | 合规底线，不是固定目标 |
+| position_floor_buffer | 0.02 | 执行缓冲 |
+| base_position_ratio | 0.90 | 中性状态目标仓位 |
+| max_position_ratio | 1.00 | 高置信度、低波动时接近满仓 |
 | max_mv_quantile | 0.99 | 最大市值分位（已放宽） |
 | min_mv_quantile | 0.02 | 最小市值分位 |
 
-`cash_reserve_ratio=0.2` 的定位是规则与实操优先：在老师认可80%仓位为合规的前提下，保留约20%现金用于次日补仓或先买后卖，避免严格100%满仓导致无法第一时间执行。它不被作为必然提高收益的“收益增强器”；本报告只引用同一配置下的回测结果，并在答辩中按风险收益权衡解释。
+本方案不是固定80%仓位，而是把80%作为合规底线。每日目标仓位由两类信号决定：一是模型分数置信度，即Top候选相对全市场分数是否足够突出；二是市场波动率分位，低波动时允许提高仓位，高波动时收敛到底线附近。代码默认给底线加2%执行缓冲，降低手续费和开收盘价格波动导致收盘口径低于80%的风险。回测会输出 `target_position_ratio`、`position_ratio`、`position_floor_breach_days`，用于证明仓位动态变化且没有低于底线。
 
 ### 5.3 回测规则
 
@@ -300,7 +307,7 @@ Quick验证结果（HS300，约5个月数据）：
 python3 scripts/06_infer_orders.py --config configs/default.yaml --holdings "当前持仓代码列表"
 ```
 
-输出 `outputs/orders_YYYYMMDD.csv` 后，按同花顺模拟盘规则先卖后买，并尽量满仓。
+输出 `outputs/orders_YYYYMMDD.csv` 后，脚本会同时打印 `TARGET POSITION`。手动交易时按同花顺模拟盘规则先卖后买，并让实际仓位尽量贴近日目标仓位，最低不低于80%。
 
 ## 6. 消融实验（Ablation Study）
 
@@ -337,7 +344,7 @@ python3 scripts/06_infer_orders.py --config configs/default.yaml --holdings "当
 4. **学习率预热**：3个epoch的warmup
 5. **多重风控机制**：涨跌停、流动性、波动率、市值、动量过滤
 6. **长短期策略支持**：可选做空机制
-7. **放宽满仓标准**：支持80%仓位（cash_reserve_ratio=0.2）
+7. **动态目标仓位**：80%为底线，目标仓位在80%-100%之间随风险和置信度变化
 8. **策略参数优化**：扩大n_hold搜索范围到40/50
 
 ### 7.2 本次更新内容（v2.0）

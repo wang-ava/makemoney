@@ -83,7 +83,7 @@ wandb:
   group: finalex
   mode: online
   tags: [stock-dl, server-8h, gru-transformer, lambdarank, finalex]
-  notes: "8-hour best-trial preset: GRU-Transformer, LambdaRank and 80% compliant dynamic strategy."
+  notes: "8-hour best-trial preset: GRU-Transformer, LambdaRank and dynamic position strategy with an 80% floor."
   watch: false
   watch_log_freq: 200
   log_artifacts: true
@@ -119,8 +119,17 @@ strategy:
   score_gap_low: 0.02
   score_gap_high: 0.10
   dynamic_k_step: 2
+  dynamic_position: true
+  min_position_ratio: 0.80
+  position_floor_buffer: 0.02
+  base_position_ratio: 0.90
+  max_position_ratio: 1.00
+  position_confidence_weight: 0.08
+  position_vol_weight: 0.12
+  position_score_z_low: 0.40
+  position_score_z_high: 1.20
+  dynamic_position_sell_down: true
   use_long_short: false
   short_ratio: 0.5
-  cash_reserve_ratio: 0.2
   use_risk_parity: false
   max_positions_per_industry: 5

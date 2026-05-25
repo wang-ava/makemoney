@@ -101,7 +101,7 @@ print("cuda:", torch.cuda.is_available())
 PY
 ```
 
-之后建议直接用 sbatch 跑 `configs/server_8h.yaml`。这份配置已对齐当前 best trial 的深度模型和策略参数，并启用 LightGBM LambdaRank：GRU-Transformer 两层、`n_hold=30`、`k_trade=1`、`cash_reserve_ratio=0.2`，即按老师放宽口径保持约 80% 以上仓位。
+之后建议直接用 sbatch 跑 `configs/server_8h.yaml`。这份配置已对齐当前 best trial 的深度模型和策略参数，并启用 LightGBM LambdaRank：GRU-Transformer 两层、`n_hold=30`、`k_trade=1`、`dynamic_position=true`。仓位不是固定80%，而是在80%-100%之间动态变化；80%只是老师认可的合规底线，代码默认加2%执行缓冲。
 
 ```bash
 cd stock_dl
@@ -217,7 +217,7 @@ model:
 | `outputs/ic_summary.json` | IC / ICIR |
 | `outputs/backtest_metrics.json` | 年化收益、夏普、回撤 |
 | `outputs/figures/*.png` | 报告图表 |
-| `outputs/orders_*.csv` | **同花顺下单参考** |
+| `outputs/orders_*.csv` | **同花顺下单参考**，包含当日 `target_position_ratio` |
 
 ## 防泄露要点
 
@@ -234,7 +234,7 @@ model:
 | **创新性** | **15%** | **GRU-Transformer、LambdaRank、融合与动态调仓** |
 | 模型效果 | 20% | 验证IC、回测收益、基准对比 |
 | 报告 | 25% | 完整报告结构 |
-| 规范依从性 | 10% | 防泄露机制、涨跌停/流动性过滤、约80%仓位合规 |
+| 规范依从性 | 10% | 防泄露机制、涨跌停/流动性过滤、动态仓位且80%底线合规 |
 | 可复现性 | 5% | 代码清晰、README完整 |
 
 ## 当前 best trial 结果
@@ -250,4 +250,4 @@ model:
 | IC Mean | 10.83% |
 | ICIR | 1.017 |
 
-注意：这次 best-trails 记录里 `lgbm_status.json` 为 `missing_dependency`，所以 59.80% 是深度模型通道结果；107 平台装好 `lightgbm` 后会启用双通道融合。`cash_reserve_ratio=0.2` 的主要价值是满足 80% 仓位口径并保留实盘/模拟盘机动现金；它不保证在所有预测文件上提高绝对收益。当前同一组本地预测的复测显示，20%现金通常会改善 Sharpe/回撤，但绝对收益可能小幅下降。
+注意：这次 best-trails 记录里 `lgbm_status.json` 为 `missing_dependency`，所以 59.80% 是深度模型通道结果；107 平台装好 `lightgbm` 后会启用双通道融合。当前代码使用动态目标仓位：80%是最低合规底线，目标仓位会根据模型分数置信度和市场波动在80%-100%之间变化，并默认加2%执行缓冲。它不保证在所有预测文件上提高绝对收益，收益结论必须以同一数据口径的回测为准。

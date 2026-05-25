@@ -60,6 +60,66 @@ def _choose_dynamic_k(day_scores: pd.Series, buy_scores: pd.Series, holdings: di
     return int(base_k)
 
 
+def _score_confidence(buy_scores: pd.Series, n_long: int, strategy_cfg: dict) -> float:
+    scores = buy_scores.replace([np.inf, -np.inf], np.nan).dropna().astype(float)
+    if len(scores) < 2:
+        return 0.5
+    top_n = min(max(3, int(n_long)), len(scores))
+    spread = float(scores.nlargest(top_n).mean() - scores.median())
+    std = float(scores.std(ddof=0))
+    if not np.isfinite(spread) or not np.isfinite(std) or std <= 1e-12:
+        return 0.5
+    z_spread = spread / std
+    low = float(strategy_cfg.get("position_score_z_low", 0.4))
+    high = float(strategy_cfg.get("position_score_z_high", 1.2))
+    if high <= low:
+        return 0.5
+    return float(np.clip((z_spread - low) / (high - low), 0.0, 1.0))
+
+
+def choose_target_position(
+    buy_scores: pd.Series,
+    n_long: int,
+    strategy_cfg: dict,
+    vol_pct: float | None = None,
+    cash_reserve_ratio: float = 0.0,
+) -> tuple[float, float]:
+    """Choose a daily target long position ratio, bounded by the 80% floor."""
+    legacy_target = 1.0 - float(cash_reserve_ratio)
+    min_position = float(strategy_cfg.get("min_position_ratio", legacy_target))
+    max_position = float(strategy_cfg.get("max_position_ratio", 1.0))
+    min_position = float(np.clip(min_position, 0.0, 1.0))
+    max_position = float(np.clip(max(max_position, min_position), min_position, 1.0))
+
+    if not strategy_cfg.get("dynamic_position", False):
+        target = float(strategy_cfg.get("target_position_ratio", legacy_target))
+        return float(np.clip(target, min_position, max_position)), 0.5
+
+    target_floor = max(
+        min_position,
+        float(strategy_cfg.get("min_target_position_ratio", min_position + float(strategy_cfg.get("position_floor_buffer", 0.0)))),
+    )
+    target_floor = float(np.clip(target_floor, min_position, max_position))
+    base_position = float(strategy_cfg.get("base_position_ratio", (min_position + max_position) / 2.0))
+    confidence = _score_confidence(buy_scores, n_long, strategy_cfg)
+    vol_score = 0.5 if vol_pct is None or not np.isfinite(vol_pct) else 1.0 - float(np.clip(vol_pct, 0.0, 1.0))
+    target = (
+        base_position
+        + float(strategy_cfg.get("position_confidence_weight", 0.08)) * (confidence - 0.5)
+        + float(strategy_cfg.get("position_vol_weight", 0.12)) * (vol_score - 0.5)
+    )
+    return float(np.clip(target, target_floor, max_position)), confidence
+
+
+def _market_value(holdings: dict[str, float], prices: pd.DataFrame, date: str) -> float:
+    value = 0.0
+    for code, shares in holdings.items():
+        p = prices.at[date, code] if code in prices.columns else np.nan
+        if np.isfinite(p):
+            value += shares * p
+    return float(value)
+
+
 def run_backtest(
     scores: pd.DataFrame,
     prices: pd.DataFrame,
@@ -87,6 +147,7 @@ def run_backtest(
 
     strategy_cfg = strategy_cfg or {}
     cash_reserve_ratio = float(np.clip(cash_reserve_ratio, 0.0, 0.95))
+    position_floor = float(strategy_cfg.get("min_position_ratio", 1.0 - cash_reserve_ratio))
     holdings: dict[str, float] = {}
     short_holdings: dict[str, float] = {}
     cash = initial_cash
@@ -101,7 +162,7 @@ def run_backtest(
     open_pivot = px.pivot(index="trade_date", columns="ts_code", values=open_col)
 
     vol_pct_by_date: dict[str, float] = {}
-    if strategy_cfg.get("adaptive_hold", False):
+    if strategy_cfg.get("adaptive_hold", False) or strategy_cfg.get("dynamic_position", False):
         vol_col = strategy_cfg.get("market_vol_col")
         if not vol_col:
             for candidate in ["hs300_idx_vol20", "sh_idx_vol20", "volatility_20d"]:
@@ -137,6 +198,13 @@ def run_backtest(
 
         cost = cost_rate + slippage
         n_long = _choose_adaptive_n(n_hold, vol_pct_by_date.get(d), strategy_cfg)
+        target_position, position_confidence = choose_target_position(
+            buy_scores,
+            n_long,
+            strategy_cfg,
+            vol_pct_by_date.get(d),
+            cash_reserve_ratio,
+        )
         n_short = int(n_hold * short_ratio) if use_long_short else 0
         day_k = min(
             max(1, _choose_dynamic_k(day_scores, buy_scores, holdings, k_trade, strategy_cfg)),
@@ -145,7 +213,7 @@ def run_backtest(
 
         if not holdings:
             picks = buy_scores.nlargest(n_long).index.tolist()
-            available_cash = cash * (1 - cash_reserve_ratio)
+            available_cash = cash * target_position
             per = available_cash / max(len(picks), 1)
             for code in picks:
                 p = open_pivot.at[exec_date, code] if code in open_pivot.columns else np.nan
@@ -172,10 +240,6 @@ def run_backtest(
                 sell_codes = day_scores.loc[held].nsmallest(sell_n).index.tolist()
             else:
                 sell_codes = []
-            post_sell_count = len(holdings) - len(sell_codes)
-            buy_n = max(day_k, n_long - post_sell_count)
-            buy_codes = buy_scores.nlargest(n_long + buy_n).index.tolist()
-            buy_codes = [c for c in buy_codes if c not in holdings][:buy_n]
 
             for code in sell_codes:
                 p = open_pivot.at[exec_date, code] if code in open_pivot.columns else np.nan
@@ -184,8 +248,34 @@ def run_backtest(
                     cash += gross * (1 - cost)
                     total_turnover += gross
 
+            if strategy_cfg.get("dynamic_position_sell_down", True):
+                mv_open = _market_value(holdings, open_pivot, exec_date)
+                long_equity_open = cash + mv_open
+                target_cash = (1.0 - target_position) * long_equity_open
+                held_after_sell = [c for c in holdings if c in day_scores.index]
+                extra_sell_candidates = [
+                    c for c in day_scores.loc[held_after_sell].sort_values().index.tolist()
+                    if c not in sell_codes
+                ] if held_after_sell else []
+                for code in extra_sell_candidates:
+                    if cash >= target_cash:
+                        break
+                    p = open_pivot.at[exec_date, code] if code in open_pivot.columns else np.nan
+                    if np.isfinite(p) and p > 0:
+                        gross = holdings.pop(code) * p
+                        cash += gross * (1 - cost)
+                        total_turnover += gross
+
+            post_sell_count = len(holdings)
+            buy_n = max(day_k, n_long - post_sell_count)
+            buy_codes = buy_scores.nlargest(n_long + buy_n).index.tolist()
+            buy_codes = [c for c in buy_codes if c not in holdings][:buy_n]
+
             if buy_codes:
-                available_cash = cash * (1 - cash_reserve_ratio)
+                mv_open = _market_value(holdings, open_pivot, exec_date)
+                long_equity_open = cash + mv_open
+                target_cash = (1.0 - target_position) * long_equity_open
+                available_cash = max(0.0, cash - target_cash)
                 per = available_cash / len(buy_codes)
                 for code in buy_codes:
                     p = open_pivot.at[exec_date, code] if code in open_pivot.columns else np.nan
@@ -243,6 +333,9 @@ def run_backtest(
                 "short_equity": short_mv + short_cash,
                 "cash": cash,
                 "position_ratio": position_ratio,
+                "target_position_ratio": target_position,
+                "position_confidence": position_confidence,
+                "market_vol_percentile": vol_pct_by_date.get(d),
                 "short_cash": short_cash,
                 "n_positions": len(holdings),
                 "n_short_positions": len(short_holdings),
@@ -285,6 +378,11 @@ def run_backtest(
             "short_return": float(short_return),
             "min_position_ratio": float(eq["position_ratio"].min()),
             "median_position_ratio": float(eq["position_ratio"].median()),
-            "cash_reserve_ratio": float(cash_reserve_ratio),
+            "max_target_position_ratio": float(eq["target_position_ratio"].max()),
+            "mean_target_position_ratio": float(eq["target_position_ratio"].mean()),
+            "min_target_position_ratio": float(eq["target_position_ratio"].min()),
+            "position_floor": float(position_floor),
+            "position_floor_breach_days": int((eq["position_ratio"] + 1e-9 < position_floor).sum()),
+            "dynamic_position": bool(strategy_cfg.get("dynamic_position", False)),
         },
     }

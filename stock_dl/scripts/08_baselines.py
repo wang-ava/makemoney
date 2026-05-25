@@ -105,7 +105,7 @@ def evaluate_one(name: str, scores: pd.DataFrame, labels: pd.DataFrame, prices: 
     )
     ic_stats = ic_summary(ic_df)
     bt = run_backtest(
-        scores[[c for c in ["trade_date", "ts_code", "score", "buyable"] if c in scores.columns]],
+        scores,
         prices,
         n_hold=n_hold,
         k_trade=k_trade,

@@ -18,6 +18,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from src.config import load_config
+from src.backtest.engine import choose_target_position
 from src.backtest.risk import attach_buyable_flag
 from src.backtest.strategy import load_best_strategy
 from src.data.features import add_features, feature_columns
@@ -157,6 +158,23 @@ def make_orders(scores: pd.DataFrame, holdings: list[str], n_hold: int, k_trade:
     return {"buy": buy, "sell": sell, "hold": hold}
 
 
+def latest_market_vol_percentile(panel: pd.DataFrame, strategy_cfg: dict) -> float | None:
+    vol_col = strategy_cfg.get("market_vol_col")
+    if not vol_col:
+        for candidate in ["hs300_idx_vol20", "sh_idx_vol20", "volatility_20d"]:
+            if candidate in panel.columns:
+                vol_col = candidate
+                break
+    if not vol_col or vol_col not in panel.columns:
+        return None
+    vol_by_date = panel.groupby("trade_date")[vol_col].median().sort_index().dropna()
+    if vol_by_date.empty:
+        return None
+    lookback = int(strategy_cfg.get("adaptive_lookback", 250))
+    window = vol_by_date.iloc[-lookback:]
+    return float((window <= vol_by_date.iloc[-1]).mean())
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", default=str(ROOT / "configs/default.yaml"))
@@ -206,6 +224,15 @@ def main() -> None:
     scores = attach_buyable_flag(scores, panel, cfg["strategy"])
     holdings = [x.strip() for x in args.holdings.split(",") if x.strip()]
     n_hold, k_trade = load_best_strategy(cfg, out)
+    buy_s = _buy_scores_with_filters(scores, cfg["strategy"])
+    vol_pct = latest_market_vol_percentile(panel, cfg["strategy"])
+    target_position, position_confidence = choose_target_position(
+        buy_s,
+        n_hold,
+        cfg["strategy"],
+        vol_pct=vol_pct,
+        cash_reserve_ratio=cfg["strategy"].get("cash_reserve_ratio", 0.0),
+    )
     orders = make_orders(
         scores,
         holdings,
@@ -221,11 +248,23 @@ def main() -> None:
         for c in codes:
             sc = float(scores.loc[scores["ts_code"] == c, "score"].iloc[0]) if c in set(scores["ts_code"]) else None
             buyable = bool(scores.loc[scores["ts_code"] == c, "buyable"].iloc[0]) if "buyable" in scores.columns and c in set(scores["ts_code"]) else None
-            rows.append({"side": side, "ts_code": c, "score": sc, "buyable": buyable})
+            rows.append({
+                "side": side,
+                "ts_code": c,
+                "score": sc,
+                "buyable": buyable,
+                "target_position_ratio": target_position,
+                "position_confidence": position_confidence,
+                "market_vol_percentile": vol_pct,
+            })
     pd.DataFrame(rows).to_csv(order_path, index=False)
     scores.to_csv(out / f"scores_{last_date}.csv", index=False)
 
     print(f"Signal date (data as of): {last_date}")
+    print(f"TARGET POSITION: {target_position:.2%}")
+    print(f"POSITION CONFIDENCE: {position_confidence:.3f}")
+    if vol_pct is not None:
+        print(f"MARKET VOL PERCENTILE: {vol_pct:.3f}")
     print(f"SELL: {orders['sell']}")
     print(f"BUY:  {orders['buy']}")
     print(f"HOLD: {orders['hold']}")

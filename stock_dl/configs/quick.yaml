@@ -73,7 +73,7 @@ strategy:
   n_hold_grid: [5, 10, 15, 20, 30]
   k_trade_grid: [1, 2, 3, 5]
   turnover_penalty: 0.01
-  risk_filter: false
+  risk_filter: true
   max_abs_pct_chg: 9.5
   min_amount_quantile: 0.05
   max_volatility_quantile: 0.98
@@ -81,4 +81,13 @@ strategy:
   adaptive_hold: false
   momentum_filter: false
   dynamic_k: false
-  cash_reserve_ratio: 0.2
+  dynamic_position: true
+  min_position_ratio: 0.80
+  position_floor_buffer: 0.02
+  base_position_ratio: 0.90
+  max_position_ratio: 1.00
+  position_confidence_weight: 0.08
+  position_vol_weight: 0.12
+  position_score_z_low: 0.40
+  position_score_z_high: 1.20
+  dynamic_position_sell_down: true

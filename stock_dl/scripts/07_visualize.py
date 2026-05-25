@@ -217,6 +217,9 @@ def write_summary(out: Path, fig_dir: Path) -> None:
         f"- 策略年化收益: {metrics.get('annual_return', 0):.2%}",
         f"- 夏普比率: {metrics.get('sharpe', 0):.3f}",
         f"- 最大回撤: {metrics.get('max_drawdown', 0):.2%}",
+        f"- 最低实际仓位: {metrics.get('min_position_ratio', 0):.2%}",
+        f"- 平均目标仓位: {metrics.get('mean_target_position_ratio', 0):.2%}",
+        f"- 仓位底线违约天数: {metrics.get('position_floor_breach_days', 0)}",
     ]
     benches = metrics.get("benchmarks", {})
     if benches:
