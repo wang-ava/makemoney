@@ -83,11 +83,15 @@ def calculate_portfolio_risk_metrics(equity_curve: pd.DataFrame, returns: pd.Ser
         return {}
 
     metrics = {}
+    returns = returns.replace([np.inf, -np.inf], np.nan).dropna()
+    if len(returns) < 2:
+        return {}
 
     rolling_max = equity_curve["equity"].cummax()
     drawdown = (equity_curve["equity"] - rolling_max) / rolling_max
     metrics["max_drawdown"] = float(drawdown.min())
     metrics["max_drawdown_duration"] = int((rolling_max - equity_curve["equity"]).groupby((equity_curve["equity"] == rolling_max).cumsum()).cumcount().max())
+    metrics["annual_return"] = float((1.0 + returns).prod() ** (252 / len(returns)) - 1.0)
 
     downside_returns = returns[returns < 0]
     if len(downside_returns) > 0:
@@ -105,7 +109,7 @@ def calculate_portfolio_risk_metrics(equity_curve: pd.DataFrame, returns: pd.Ser
     metrics["var_95"] = var_95
     metrics["cvar_95"] = float(returns[returns <= var_95].mean()) if len(returns[returns <= var_95]) > 0 else var_95
 
-    metrics["calmar_ratio"] = float(metrics.get("annual_return", 0) / abs(metrics["max_drawdown"]) if metrics["max_drawdown"] != 0 else 0)
+    metrics["calmar_ratio"] = float(metrics["annual_return"] / abs(metrics["max_drawdown"]) if metrics["max_drawdown"] != 0 else 0)
 
     return metrics
 

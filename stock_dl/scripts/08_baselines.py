@@ -151,7 +151,10 @@ def main() -> None:
         & (panel["trade_date"] <= str(cfg["val_end"]))
         & panel["label"].notna()
     ][["trade_date", "ts_code", "label"]]
-    prices = panel[["trade_date", "ts_code", "open", "close"]]
+    price_cols = ["trade_date", "ts_code", "open", "close"]
+    if "pct_chg" in panel.columns:
+        price_cols.append("pct_chg")
+    prices = panel[price_cols]
 
     baselines = build_baseline_scores(panel, out, cfg)
     rows = []

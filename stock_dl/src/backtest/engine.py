@@ -154,12 +154,41 @@ def run_backtest(
     short_cash = initial_cash * short_ratio if use_long_short else 0.0
     equity_curve = []
     total_turnover = 0.0
+    long_buy_dates: dict[str, str] = {}
+    trade_blocks = {
+        "t1_sell_blocked": 0,
+        "limit_buy_blocked": 0,
+        "limit_sell_blocked": 0,
+    }
 
     px = prices.copy()
     px["trade_date"] = px["trade_date"].astype(str)
     close_pivot = px.pivot(index="trade_date", columns="ts_code", values="close")
     open_col = "open" if "open" in px.columns else "close"
     open_pivot = px.pivot(index="trade_date", columns="ts_code", values=open_col)
+    pct_chg_pivot = px.pivot(index="trade_date", columns="ts_code", values="pct_chg") if "pct_chg" in px.columns else None
+    limit_pct = float(strategy_cfg.get("limit_pct_chg", strategy_cfg.get("max_abs_pct_chg", 9.5)))
+    enforce_t1 = bool(strategy_cfg.get("enforce_t1", True))
+
+    def can_trade(code: str, date: str, side: str) -> bool:
+        if pct_chg_pivot is None or date not in pct_chg_pivot.index or code not in pct_chg_pivot.columns:
+            return True
+        pct = pct_chg_pivot.at[date, code]
+        if not np.isfinite(pct):
+            return True
+        if side == "buy" and pct >= limit_pct:
+            trade_blocks["limit_buy_blocked"] += 1
+            return False
+        if side == "sell" and pct <= -limit_pct:
+            trade_blocks["limit_sell_blocked"] += 1
+            return False
+        return True
+
+    def can_sell_long(code: str, date: str) -> bool:
+        if enforce_t1 and long_buy_dates.get(code) == date:
+            trade_blocks["t1_sell_blocked"] += 1
+            return False
+        return can_trade(code, date, "sell")
 
     vol_pct_by_date: dict[str, float] = {}
     if strategy_cfg.get("adaptive_hold", False) or strategy_cfg.get("dynamic_position", False):
@@ -216,10 +245,13 @@ def run_backtest(
             available_cash = cash * target_position
             per = available_cash / max(len(picks), 1)
             for code in picks:
+                if not can_trade(code, exec_date, "buy"):
+                    continue
                 p = open_pivot.at[exec_date, code] if code in open_pivot.columns else np.nan
                 if np.isfinite(p) and p > 0:
                     spend = min(per, cash)
                     holdings[code] = spend * (1 - cost) / p
+                    long_buy_dates[code] = exec_date
                     cash -= spend
                     total_turnover += spend
 
@@ -227,6 +259,8 @@ def run_backtest(
                 short_picks = buy_scores.nsmallest(n_short).index.tolist()
                 per_short = short_cash / max(len(short_picks), 1)
                 for code in short_picks:
+                    if not can_trade(code, exec_date, "sell"):
+                        continue
                     p = open_pivot.at[exec_date, code] if code in open_pivot.columns else np.nan
                     if np.isfinite(p) and p > 0:
                         short_holdings[code] = per_short * (1 - cost) / p
@@ -241,12 +275,17 @@ def run_backtest(
             else:
                 sell_codes = []
 
+            executed_rebalance_sells = 0
             for code in sell_codes:
+                if not can_sell_long(code, exec_date):
+                    continue
                 p = open_pivot.at[exec_date, code] if code in open_pivot.columns else np.nan
                 if np.isfinite(p) and p > 0:
                     gross = holdings.pop(code) * p
+                    long_buy_dates.pop(code, None)
                     cash += gross * (1 - cost)
                     total_turnover += gross
+                    executed_rebalance_sells += 1
 
             if strategy_cfg.get("dynamic_position_sell_down", True):
                 mv_open = _market_value(holdings, open_pivot, exec_date)
@@ -260,14 +299,17 @@ def run_backtest(
                 for code in extra_sell_candidates:
                     if cash >= target_cash:
                         break
+                    if not can_sell_long(code, exec_date):
+                        continue
                     p = open_pivot.at[exec_date, code] if code in open_pivot.columns else np.nan
                     if np.isfinite(p) and p > 0:
                         gross = holdings.pop(code) * p
+                        long_buy_dates.pop(code, None)
                         cash += gross * (1 - cost)
                         total_turnover += gross
 
             post_sell_count = len(holdings)
-            buy_n = max(day_k, n_long - post_sell_count)
+            buy_n = max(executed_rebalance_sells, n_long - post_sell_count)
             buy_codes = buy_scores.nlargest(n_long + buy_n).index.tolist()
             buy_codes = [c for c in buy_codes if c not in holdings][:buy_n]
 
@@ -278,10 +320,13 @@ def run_backtest(
                 available_cash = max(0.0, cash - target_cash)
                 per = available_cash / len(buy_codes)
                 for code in buy_codes:
+                    if not can_trade(code, exec_date, "buy"):
+                        continue
                     p = open_pivot.at[exec_date, code] if code in open_pivot.columns else np.nan
                     if np.isfinite(p) and p > 0:
                         spend = min(per, cash)
                         holdings[code] = holdings.get(code, 0) + spend * (1 - cost) / p
+                        long_buy_dates[code] = exec_date
                         cash -= spend
                         total_turnover += spend
 
@@ -292,6 +337,8 @@ def run_backtest(
                 short_buy_codes = [c for c in short_buy_codes if c not in short_holdings][:day_k]
 
                 for code in short_sell_codes:
+                    if not can_trade(code, exec_date, "buy"):
+                        continue
                     p = open_pivot.at[exec_date, code] if code in open_pivot.columns else np.nan
                     if np.isfinite(p) and p > 0:
                         gross = short_holdings.pop(code) * p
@@ -301,6 +348,8 @@ def run_backtest(
                 if short_buy_codes:
                     per_short = short_cash / len(short_buy_codes)
                     for code in short_buy_codes:
+                        if not can_trade(code, exec_date, "sell"):
+                            continue
                         p = open_pivot.at[exec_date, code] if code in open_pivot.columns else np.nan
                         if np.isfinite(p) and p > 0:
                             spend = min(per_short, short_cash)
@@ -384,5 +433,6 @@ def run_backtest(
             "position_floor": float(position_floor),
             "position_floor_breach_days": int((eq["position_ratio"] + 1e-9 < position_floor).sum()),
             "dynamic_position": bool(strategy_cfg.get("dynamic_position", False)),
+            **trade_blocks,
         },
     }

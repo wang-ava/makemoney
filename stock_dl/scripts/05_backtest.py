@@ -13,7 +13,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from src.backtest.engine import run_backtest
-from src.backtest.risk import attach_buyable_flag
+from src.backtest.risk import attach_buyable_flag, calculate_portfolio_risk_metrics
 from src.backtest.strategy import save_best_strategy, tune_strategy
 from src.config import load_config
 from src.data.dataset import load_panel
@@ -81,7 +81,10 @@ def main() -> None:
     pred["trade_date"] = pred["trade_date"].astype(str)
     panel = load_panel(out / "panel.parquet")
     panel["trade_date"] = panel["trade_date"].astype(str)
-    prices = panel[["trade_date", "ts_code", "open", "close"]]
+    price_cols = ["trade_date", "ts_code", "open", "close"]
+    if "pct_chg" in panel.columns:
+        price_cols.append("pct_chg")
+    prices = panel[price_cols]
 
     # 验证集区间
     pred = pred[(pred["trade_date"] > str(cfg["train_end"])) & (pred["trade_date"] <= str(cfg["val_end"]))]
@@ -115,6 +118,10 @@ def main() -> None:
         eq, bench_metrics = add_benchmarks(eq, Path(cfg["data_dir"]), cfg["strategy"]["initial_cash"])
         eq.to_csv(out / "equity_curve.csv", index=False)
         result["metrics"]["benchmarks"] = bench_metrics
+        returns = eq["equity"].pct_change().dropna()
+        advanced_risk = calculate_portfolio_risk_metrics(eq, returns)
+        if advanced_risk:
+            result["metrics"]["advanced_risk"] = advanced_risk
     (out / "backtest_metrics.json").write_text(
         json.dumps(result["metrics"], indent=2), encoding="utf-8"
     )

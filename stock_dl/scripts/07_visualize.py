@@ -7,12 +7,16 @@ import sys
 from pathlib import Path
 
 import matplotlib.pyplot as plt
+import numpy as np
 import pandas as pd
+import torch
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from src.config import load_config
+from src.data.dataset import load_panel
+from src.models.factory import build_model_from_checkpoint
 from src.utils.wandb_utils import finish_wandb, init_wandb, wandb_log_artifact, wandb_log_images
 
 
@@ -198,6 +202,83 @@ def save_strategy_tuning_plot(out: Path, fig_dir: Path) -> None:
     plt.close(fig)
 
 
+def _sample_window(panel: pd.DataFrame, code: str, trade_date: str, feat_cols: list[str], seq_len: int) -> np.ndarray | None:
+    g = panel[panel["ts_code"] == code].sort_values("trade_date")
+    positions = np.flatnonzero(g["trade_date"].astype(str).values == str(trade_date))
+    if len(positions) == 0 or positions[-1] + 1 < seq_len:
+        return None
+    end = int(positions[-1])
+    window = g.iloc[end - seq_len + 1 : end + 1][feat_cols].astype(np.float32).values
+    mu = np.nanmean(window, axis=0, keepdims=True)
+    std = np.nanstd(window, axis=0, keepdims=True) + 1e-6
+    window = (window - mu) / std
+    return np.nan_to_num(window, nan=0.0, posinf=0.0, neginf=0.0).astype(np.float32)
+
+
+def save_attention_heatmap(out: Path, fig_dir: Path) -> None:
+    model_fp = out / "model.pt"
+    panel_fp = out / "panel.parquet"
+    pred_fp = out / "val_predictions.csv"
+    if not (model_fp.exists() and panel_fp.exists() and pred_fp.exists()):
+        return
+
+    ckpt = torch.load(model_fp, map_location="cpu", weights_only=True)
+    model, flatten = build_model_from_checkpoint(ckpt)
+    if flatten:
+        return
+    model.load_state_dict(ckpt["model_state"])
+    model.eval()
+
+    pred = pd.read_csv(pred_fp).dropna(subset=["score"])
+    if pred.empty:
+        return
+    pred["trade_date"] = pred["trade_date"].astype(str)
+    sample = pd.concat(
+        [pred.nlargest(3, "score"), pred.nsmallest(2, "score")],
+        ignore_index=True,
+    ).drop_duplicates(["trade_date", "ts_code"])
+
+    panel = load_panel(panel_fp)
+    feat_cols = ckpt.get("feat_cols", [])
+    for col in feat_cols:
+        if col not in panel.columns:
+            panel[col] = 0.0
+    windows = []
+    ylabels = []
+    for row in sample.itertuples(index=False):
+        window = _sample_window(panel, str(row.ts_code), str(row.trade_date), feat_cols, int(ckpt["seq_len"]))
+        if window is None:
+            continue
+        windows.append(window)
+        ylabels.append(f"{row.ts_code}\n{row.trade_date}")
+    if not windows:
+        return
+
+    x = torch.from_numpy(np.stack(windows))
+    try:
+        with torch.no_grad():
+            _, weights = model(x, return_attention=True)
+    except TypeError:
+        return
+
+    attn = weights.detach().cpu().numpy()
+    while attn.ndim > 2:
+        attn = attn.mean(axis=1)
+    if attn.ndim != 2:
+        return
+
+    fig, ax = plt.subplots(figsize=(10, max(3.5, 0.7 * len(ylabels) + 1.5)))
+    im = ax.imshow(attn, aspect="auto", cmap="viridis")
+    ax.set_yticks(range(len(ylabels)), ylabels)
+    ax.set_xticks(range(attn.shape[1]), [f"t-{attn.shape[1] - 1 - i}" if i < attn.shape[1] - 1 else "t" for i in range(attn.shape[1])])
+    ax.set_xlabel("time step")
+    ax.set_title("Temporal attention weights")
+    fig.colorbar(im, ax=ax, label="attention")
+    fig.tight_layout()
+    fig.savefig(fig_dir / "attention_heatmap.png", dpi=180)
+    plt.close(fig)
+
+
 def write_summary(out: Path, fig_dir: Path) -> None:
     metrics = {}
     ic = {}
@@ -213,6 +294,10 @@ def write_summary(out: Path, fig_dir: Path) -> None:
         "",
         f"- IC mean: {ic.get('ic_mean', 0):.6f}",
         f"- ICIR: {ic.get('icir', 0):.6f}",
+        f"- Pearson IC mean: {ic.get('pearson_ic_mean', 0):.6f}",
+        f"- 方向胜率: {ic.get('direction_accuracy', 0):.2%}",
+        f"- 多头方向胜率: {ic.get('long_accuracy', 0):.2%}",
+        f"- 空头方向胜率: {ic.get('short_accuracy', 0):.2%}",
         f"- 策略总收益: {metrics.get('total_return', 0):.2%}",
         f"- 策略年化收益: {metrics.get('annual_return', 0):.2%}",
         f"- 夏普比率: {metrics.get('sharpe', 0):.3f}",
@@ -221,6 +306,14 @@ def write_summary(out: Path, fig_dir: Path) -> None:
         f"- 平均目标仓位: {metrics.get('mean_target_position_ratio', 0):.2%}",
         f"- 仓位底线违约天数: {metrics.get('position_floor_breach_days', 0)}",
     ]
+    advanced_risk = metrics.get("advanced_risk", {})
+    if advanced_risk:
+        lines.extend([
+            f"- Sortino比率: {advanced_risk.get('sortino_ratio', 0):.3f}",
+            f"- Calmar比率: {advanced_risk.get('calmar_ratio', 0):.3f}",
+            f"- VaR(95%): {advanced_risk.get('var_95', 0):.2%}",
+            f"- CVaR(95%): {advanced_risk.get('cvar_95', 0):.2%}",
+        ])
     benches = metrics.get("benchmarks", {})
     if benches:
         lines.extend(["", "## 市场基准总收益", ""])
@@ -265,6 +358,7 @@ def write_summary(out: Path, fig_dir: Path) -> None:
         f"- `{fig_dir / 'feature_ic_top20.png'}`",
         f"- `{fig_dir / 'lgbm_feature_importance.png'}`",
         f"- `{fig_dir / 'strategy_tuning_heatmap.png'}`",
+        f"- `{fig_dir / 'attention_heatmap.png'}`",
     ])
     (out / "experiment_summary.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
 
@@ -286,6 +380,7 @@ def main() -> None:
     save_feature_ic_plot(out, fig_dir)
     save_lgbm_importance_plot(out, fig_dir)
     save_strategy_tuning_plot(out, fig_dir)
+    save_attention_heatmap(out, fig_dir)
     write_summary(out, fig_dir)
     wandb_run = init_wandb(cfg, job_type="visualize", extra_config={"script": "07_visualize.py"})
     wandb_log_images(wandb_run, fig_dir)

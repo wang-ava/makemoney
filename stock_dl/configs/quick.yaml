@@ -83,6 +83,9 @@ strategy:
   dynamic_k: false
   dynamic_position: true
   min_position_ratio: 0.80
+  force_80percent_position: true
+  enforce_t1: true
+  limit_pct_chg: 9.5
   position_floor_buffer: 0.02
   base_position_ratio: 0.90
   max_position_ratio: 1.00

@@ -55,7 +55,8 @@ stock_dl/
 │   ├── 08_baselines.py         # 基线对比
 │   ├── 09_diagnostics.py       # 诊断
 │   ├── 10_train_lgbm.py        # LightGBM LambdaRank
-│   └── 11_blend_scores.py      # 深度模型 + LGBM 融合
+│   ├── 11_blend_scores.py      # 深度模型 + LGBM 融合
+│   └── 13_ablation.py          # 消融实验
 ├── src/
 │   └── models/
 │       ├── gru_transformer.py   # GRU-Transformer [新增]
@@ -81,6 +82,9 @@ wandb login
 # 快速试跑
 chmod +x run_all.sh
 ./run_all.sh configs/quick.yaml
+
+# 消融实验（会复用共享 panel，默认关闭 W&B 和 LGBM）
+python3 scripts/13_ablation.py --config configs/quick.yaml --max-epochs 3 --variants full,no_gru,no_attention
 
 # 正式训练（需GPU或107平台；默认对齐 best trial）
 ./run_all.sh configs/default.yaml
@@ -215,9 +219,10 @@ model:
 | `outputs/lgbm_val_predictions.csv` | LightGBM LambdaRank预测 |
 | `outputs/blend_alpha_search.csv` | 融合权重搜索结果 |
 | `outputs/ic_summary.json` | IC / ICIR |
-| `outputs/backtest_metrics.json` | 年化收益、夏普、回撤 |
-| `outputs/figures/*.png` | 报告图表 |
-| `outputs/orders_*.csv` | **同花顺下单参考**，包含当日 `target_position_ratio` |
+| `outputs/backtest_metrics.json` | 年化收益、夏普、回撤、Sortino/Calmar/VaR |
+| `outputs/figures/*.png` | 报告图表，含 `attention_heatmap.png` |
+| `outputs/orders_*.csv` | **同花顺下单参考**，包含目标仓位、估算金额和股数 |
+| `outputs/ablation/ablation_results.csv` | 消融实验结果 |
 
 ## 防泄露要点
 
