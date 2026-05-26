@@ -675,11 +675,11 @@ def add_features(
     # ===== 新增特征：时间效应 =====
     if "trade_date" in df.columns:
         trade_dt = pd.to_datetime(df["trade_date"], format="%Y%m%d", errors="coerce")
-        df["month_of_year"] = trade_dt.dt.month
-        df["day_of_week"] = trade_dt.dt.dayofweek
-        df["week_of_year"] = trade_dt.dt.isocalendar().week.astype(int)
+        df["month_of_year"] = trade_dt.dt.month.fillna(0).astype(np.int16)
+        df["day_of_week"] = trade_dt.dt.dayofweek.fillna(-1).astype(np.int16)
+        df["week_of_year"] = trade_dt.dt.isocalendar().week.fillna(0).astype(np.int16)
         # 财报季标识 (3, 4, 6, 7, 9, 10, 12, 1月)
-        df["earnings_season"] = df["month_of_year"].isin([3, 4, 6, 7, 9, 10, 12, 1]).astype(int)
+        df["earnings_season"] = df["month_of_year"].isin([3, 4, 6, 7, 9, 10, 12, 1]).astype(np.int8)
 
     if cross_section_rank:
         derived: dict[str, pd.Series] = {}

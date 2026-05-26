@@ -4,6 +4,7 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
+from pandas.api import types as pdt
 import torch
 from torch.utils.data import Dataset, Sampler
 
@@ -166,9 +167,35 @@ class DateBatchSampler(Sampler[list[int]]):
 def save_panel(panel: pd.DataFrame, path: Path) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     panel = normalize_panel_schema(panel, context="panel before save")
+    panel = coerce_panel_for_parquet(panel)
     panel.to_parquet(path, index=False)
 
 
 def load_panel(path: Path) -> pd.DataFrame:
     panel = pd.read_parquet(path)
     return normalize_panel_schema(panel, context=str(path))
+
+
+def coerce_panel_for_parquet(panel: pd.DataFrame) -> pd.DataFrame:
+    """Convert pandas extension/object dtypes to pyarrow-friendly dtypes."""
+    df = panel.copy()
+    for col in df.columns:
+        series = df[col]
+        dtype = series.dtype
+        if pdt.is_bool_dtype(dtype):
+            df[col] = series.fillna(False).astype(np.bool_)
+        elif pdt.is_integer_dtype(dtype):
+            numeric = pd.to_numeric(series, errors="coerce")
+            if numeric.isna().any():
+                df[col] = numeric.astype(np.float64)
+            else:
+                df[col] = numeric.astype(np.int64)
+        elif pdt.is_float_dtype(dtype):
+            df[col] = pd.to_numeric(series, errors="coerce").astype(np.float64)
+        elif pdt.is_datetime64_any_dtype(dtype):
+            df[col] = series.astype("datetime64[ns]")
+        elif pdt.is_object_dtype(dtype) or pdt.is_string_dtype(dtype) or pdt.is_categorical_dtype(dtype):
+            df[col] = series.where(series.notna(), None).astype("string").astype(object)
+        elif pdt.is_extension_array_dtype(dtype):
+            df[col] = series.astype("string").where(series.notna(), None).astype(object)
+    return df
