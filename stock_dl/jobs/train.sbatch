@@ -11,10 +11,14 @@
 
 set -euo pipefail
 
-# 用法：
-#   cd ~/finalex/finalex/stock_dl
+# 用法（推荐，从任何目录都可以）：
+#   STOCK_DL=~/finalex/finalex/stock_dl
+#   mkdir -p "$STOCK_DL/logs"
+#   REPO="$STOCK_DL" sbatch "$STOCK_DL/jobs/train.sbatch"
+#
+# 用法（已经 cd 到 stock_dl 时）：
 #   mkdir -p logs
-#   sbatch jobs/train.sbatch
+#   REPO="$PWD" sbatch jobs/train.sbatch
 #
 # 可选：
 #   CONFIG=configs/default.yaml sbatch jobs/train.sbatch
@@ -23,7 +27,9 @@ set -euo pipefail
 #   SKIP_PANEL=1 sbatch jobs/train.sbatch      # 强制复用已有 panel
 #   TRAIN_MAX_MINUTES=360 sbatch jobs/train.sbatch
 
-REPO="${REPO:-${SLURM_SUBMIT_DIR:-$HOME/finalex/finalex/stock_dl}}"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SCRIPT_REPO="$(cd "$SCRIPT_DIR/.." && pwd)"
+REPO="${REPO:-$SCRIPT_REPO}"
 CONFIG="${CONFIG:-configs/server_8h.yaml}"
 CONDA_ENV="${CONDA_ENV:-dl-homework}"
 HOLDINGS="${HOLDINGS:-}"
