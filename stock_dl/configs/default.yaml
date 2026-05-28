@@ -59,6 +59,7 @@ train:
 lgbm:
   enabled: true
   objective: lambdarank
+  relevance_bins: 101
   num_boost_round: 300
   early_stopping_rounds: 35
   ndcg_eval_at: [10, 20, 30]

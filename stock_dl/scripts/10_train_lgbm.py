@@ -48,11 +48,17 @@ def main() -> None:
     if not feat_cols:
         raise ValueError("No numeric feature columns found for LightGBM.")
 
-    train_df = prepare_ranker_frame(panel, feat_cols, None, cfg["train_end"])
-    val_df = prepare_ranker_frame(panel, feat_cols, cfg["train_end"], cfg["val_end"])
+    relevance_bins = int(lgbm_cfg.get("relevance_bins", 101))
+    train_df = prepare_ranker_frame(panel, feat_cols, None, cfg["train_end"], relevance_bins=relevance_bins)
+    val_df = prepare_ranker_frame(panel, feat_cols, cfg["train_end"], cfg["val_end"], relevance_bins=relevance_bins)
     if train_df.empty or val_df.empty:
         raise ValueError("Empty LightGBM train/val data. Check train_end, val_end and labels.")
-    print(f"LightGBM LambdaRank: train={train_df.shape}, val={val_df.shape}, features={len(feat_cols)}")
+    relevance_min = int(min(train_df["relevance"].min(), val_df["relevance"].min()))
+    relevance_max = int(max(train_df["relevance"].max(), val_df["relevance"].max()))
+    print(
+        f"LightGBM LambdaRank: train={train_df.shape}, val={val_df.shape}, "
+        f"features={len(feat_cols)}, relevance={relevance_min}..{relevance_max}/{relevance_bins - 1}"
+    )
 
     wandb_run = init_wandb(
         cfg,
@@ -62,6 +68,7 @@ def main() -> None:
             "lgbm_train_rows": int(train_df.shape[0]),
             "lgbm_val_rows": int(val_df.shape[0]),
             "n_features": len(feat_cols),
+            "relevance_bins": relevance_bins,
         },
     )
     model = train_lambdarank(train_df, val_df, feat_cols, lgbm_cfg)

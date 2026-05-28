@@ -12,7 +12,12 @@ def prepare_ranker_frame(
     feat_cols: list[str],
     start_exclusive: str | None,
     end_inclusive: str,
+    relevance_bins: int = 101,
 ) -> pd.DataFrame:
+    relevance_bins = int(relevance_bins)
+    if relevance_bins < 2:
+        raise ValueError("relevance_bins must be at least 2 for LambdaRank.")
+
     df = panel.copy()
     df["trade_date"] = df["trade_date"].astype(str)
     mask = df["label"].notna() & (df["trade_date"] <= str(end_inclusive))
@@ -21,16 +26,24 @@ def prepare_ranker_frame(
     cols = ["trade_date", "ts_code", "label", *feat_cols]
     out = df.loc[mask, cols].copy()
     out = out.sort_values(["trade_date", "ts_code"]).reset_index(drop=True)
-    out[feat_cols] = out[feat_cols].replace([np.inf, -np.inf], np.nan).fillna(0.0)
-    out["relevance"] = (
-        out.groupby("trade_date")["label"]
-        .rank(pct=True, method="average")
-        .mul(100)
-        .round()
-        .clip(0, 100)
-        .astype(int)
-    )
-    return out
+
+    base = out[["trade_date", "ts_code", "label"]].copy()
+    feature_values = out[feat_cols].replace([np.inf, -np.inf], np.nan).fillna(0.0)
+
+    max_relevance = relevance_bins - 1
+
+    def _to_relevance(labels: pd.Series) -> pd.Series:
+        if labels.size <= 1:
+            return pd.Series(np.zeros(labels.size, dtype=np.int16), index=labels.index)
+        rank = labels.rank(method="average", ascending=True) - 1.0
+        relevance = (rank / (labels.size - 1) * max_relevance).round()
+        return relevance.clip(0, max_relevance).astype(np.int16)
+
+    relevance = out.groupby("trade_date", sort=False)["label"].transform(_to_relevance)
+    return pd.concat(
+        [base, feature_values, pd.DataFrame({"relevance": relevance.astype(np.int16)})],
+        axis=1,
+    ).copy()
 
 
 def group_sizes(df: pd.DataFrame) -> list[int]:
@@ -59,6 +72,16 @@ def train_lambdarank(
         "verbose": -1,
         "seed": int(cfg.get("seed", 42)),
     }
+    max_label = int(max(train_df["relevance"].max(), val_df["relevance"].max()))
+    label_gain = cfg.get("label_gain")
+    if label_gain is None:
+        relevance_bins = max(int(cfg.get("relevance_bins", 101)), max_label + 1)
+        label_gain = list(range(relevance_bins))
+    if len(label_gain) <= max_label:
+        raise ValueError(
+            f"LightGBM label_gain has {len(label_gain)} entries, but relevance labels go up to {max_label}."
+        )
+    params["label_gain"] = label_gain
     if int(cfg.get("num_threads", 0)) > 0:
         params["num_threads"] = int(cfg["num_threads"])
 
