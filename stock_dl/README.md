@@ -83,6 +83,10 @@ wandb login
 chmod +x run_all.sh
 ./run_all.sh configs/quick.yaml
 
+# 某一步失败后从该步骤继续，避免重跑前面的重任务
+START_AT=lgbm ./run_all.sh configs/default.yaml
+START_AT=visualize STOP_AFTER=visualize ./run_all.sh configs/default.yaml
+
 # 消融实验（会复用共享 panel，默认关闭 W&B 和 LGBM）
 python3 scripts/13_ablation.py --config configs/quick.yaml --max-epochs 3 --variants full,no_gru,no_attention
 
@@ -114,6 +118,21 @@ sbatch jobs/train.sbatch
 ```
 
 这会输出到 `outputs_server8h/`。训练脚本会在 `train.max_minutes` 或 sbatch 传入的 `TRAIN_MAX_MINUTES` 到达后优雅停止，保存当前验证集最好的 `model.pt`，再继续跑融合、IC、回测、基线对比、图表和下单清单。
+
+如果中途某个阶段失败，不要从头训练。可以用阶段恢复参数继续：
+
+```bash
+# 深度模型已经训练完，只重跑 LGBM 和后处理
+START_AT=lgbm sbatch jobs/train.sbatch
+
+# LGBM 已经完成，只重跑融合、评估、回测、图表和下单清单
+START_AT=blend sbatch jobs/train.sbatch
+
+# 只重新生成图表和实验摘要
+START_AT=visualize STOP_AFTER=visualize sbatch jobs/train.sbatch
+```
+
+阶段顺序是：`panel -> train -> lgbm -> blend -> eval -> backtest -> baselines -> diagnostics -> visualize -> infer`。可视化结果会写到 `outputs_server8h/figures/`，核心文字摘要是 `outputs_server8h/experiment_summary.md`。
 
 `jobs/train.sbatch` 默认 `SKIP_PANEL=auto`：如果 `outputs_server8h/panel.parquet` 已存在，会自动跳过面板重建；如果改了日期、特征或股票池，强制重建：
 

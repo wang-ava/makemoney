@@ -25,6 +25,8 @@ set -euo pipefail
 #   HOLDINGS="000001.SZ,600000.SH" sbatch jobs/train.sbatch
 #   SKIP_PANEL=0 sbatch jobs/train.sbatch      # 强制重建 panel
 #   SKIP_PANEL=1 sbatch jobs/train.sbatch      # 强制复用已有 panel
+#   START_AT=lgbm sbatch jobs/train.sbatch     # 从 LGBM 继续，跳过深度训练
+#   START_AT=visualize STOP_AFTER=visualize sbatch jobs/train.sbatch  # 只重画图
 #   TRAIN_MAX_MINUTES=360 sbatch jobs/train.sbatch
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -34,6 +36,8 @@ CONFIG="${CONFIG:-configs/server_8h.yaml}"
 CONDA_ENV="${CONDA_ENV:-dl-homework}"
 HOLDINGS="${HOLDINGS:-}"
 SKIP_PANEL="${SKIP_PANEL:-auto}"
+START_AT="${START_AT:-panel}"
+STOP_AFTER="${STOP_AFTER:-infer}"
 export CONFIG
 
 cd "$REPO"
@@ -66,6 +70,51 @@ PY
 nvidia-smi || true
 
 echo "== Pipeline =="
+stage_index() {
+  case "$1" in
+    panel) echo 0 ;;
+    train) echo 1 ;;
+    lgbm) echo 2 ;;
+    blend) echo 3 ;;
+    eval) echo 4 ;;
+    backtest) echo 5 ;;
+    baselines) echo 6 ;;
+    diagnostics) echo 7 ;;
+    visualize) echo 8 ;;
+    infer) echo 9 ;;
+    *)
+      echo "Unknown stage: $1" >&2
+      echo "Valid stages: panel train lgbm blend eval backtest baselines diagnostics visualize infer" >&2
+      exit 2
+      ;;
+  esac
+}
+
+START_IDX="$(stage_index "$START_AT")"
+STOP_IDX="$(stage_index "$STOP_AFTER")"
+if [ "$START_IDX" -gt "$STOP_IDX" ]; then
+  echo "START_AT must be before or equal to STOP_AFTER." >&2
+  exit 2
+fi
+
+should_run() {
+  local idx
+  idx="$(stage_index "$1")"
+  [ "$idx" -ge "$START_IDX" ] && [ "$idx" -le "$STOP_IDX" ]
+}
+
+run_stage() {
+  local stage="$1"
+  shift
+  if should_run "$stage"; then
+    echo "== stage: $stage =="
+    "$@"
+  else
+    echo "skip stage: $stage"
+  fi
+}
+
+echo "pipeline range: $START_AT -> $STOP_AFTER"
 PANEL_PATH="$(python - <<'PY'
 import os
 from pathlib import Path
@@ -85,31 +134,33 @@ else
 fi
 
 if [ "$SKIP_PANEL_EFFECTIVE" != "1" ]; then
-  python scripts/01_build_panel.py --config "$CONFIG"
+  run_stage panel python scripts/01_build_panel.py --config "$CONFIG"
 else
   echo "skip panel build: $PANEL_PATH"
 fi
 
-if [ -z "${TRAIN_MAX_MINUTES:-}" ]; then
-  if [ "$SKIP_PANEL_EFFECTIVE" = "1" ]; then
-    export TRAIN_MAX_MINUTES="${TRAIN_MAX_MINUTES_SKIP_PANEL:-330}"
+if should_run train; then
+  if [ -z "${TRAIN_MAX_MINUTES:-}" ]; then
+    if [ "$SKIP_PANEL_EFFECTIVE" = "1" ]; then
+      export TRAIN_MAX_MINUTES="${TRAIN_MAX_MINUTES_SKIP_PANEL:-330}"
+    else
+      export TRAIN_MAX_MINUTES="${TRAIN_MAX_MINUTES_BUILD_PANEL:-270}"
+    fi
   else
-    export TRAIN_MAX_MINUTES="${TRAIN_MAX_MINUTES_BUILD_PANEL:-270}"
+    export TRAIN_MAX_MINUTES
   fi
-else
-  export TRAIN_MAX_MINUTES
+  echo "train max minutes: $TRAIN_MAX_MINUTES"
 fi
-echo "train max minutes: $TRAIN_MAX_MINUTES"
 
-python scripts/03_train.py --config "$CONFIG"
-python scripts/10_train_lgbm.py --config "$CONFIG"
-python scripts/11_blend_scores.py --config "$CONFIG"
-python scripts/04_eval_ic.py --config "$CONFIG"
-python scripts/05_backtest.py --config "$CONFIG"
-python scripts/08_baselines.py --config "$CONFIG"
-python scripts/09_diagnostics.py --config "$CONFIG"
-python scripts/07_visualize.py --config "$CONFIG"
-python scripts/06_infer_orders.py --config "$CONFIG" --holdings "$HOLDINGS"
+run_stage train python scripts/03_train.py --config "$CONFIG"
+run_stage lgbm python scripts/10_train_lgbm.py --config "$CONFIG"
+run_stage blend python scripts/11_blend_scores.py --config "$CONFIG"
+run_stage eval python scripts/04_eval_ic.py --config "$CONFIG"
+run_stage backtest python scripts/05_backtest.py --config "$CONFIG"
+run_stage baselines python scripts/08_baselines.py --config "$CONFIG"
+run_stage diagnostics python scripts/09_diagnostics.py --config "$CONFIG"
+run_stage visualize python scripts/07_visualize.py --config "$CONFIG"
+run_stage infer python scripts/06_infer_orders.py --config "$CONFIG" --holdings "$HOLDINGS"
 
 echo "== Done =="
 echo "finished at: $(date)"
