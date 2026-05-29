@@ -86,8 +86,19 @@ def score_latest_lgbm(panel: pd.DataFrame, out: Path) -> pd.DataFrame:
 
 
 def blend_latest_scores(deep_scores: pd.DataFrame, lgbm_scores: pd.DataFrame, out: Path, cfg: dict) -> pd.DataFrame:
-    if lgbm_scores.empty:
-        return deep_scores
+    lgbm_enabled = cfg.get("lgbm", {}).get("enabled", True)
+
+    # 纯DL模式：直接使用深度学习分数
+    if lgbm_scores.empty or not lgbm_enabled:
+        if deep_scores.empty:
+            return pd.DataFrame()
+        result = deep_scores.rename(columns={"score": "score_deep"})
+        result["score"] = result["score_deep"]
+        result["rank_deep"] = result.groupby("trade_date")["score_deep"].rank(pct=True)
+        result["rank_lgbm"] = result["rank_deep"]  # 占位符
+        result["score_lgbm"] = result["score_deep"]  # 占位符
+        return result[["trade_date", "ts_code", "score", "score_deep", "score_lgbm", "rank_deep", "rank_lgbm"]]
+
     merged = deep_scores.rename(columns={"score": "score_deep"}).merge(
         lgbm_scores,
         on=["trade_date", "ts_code"],
@@ -218,6 +229,9 @@ def main() -> None:
     args = parser.parse_args()
     cfg = load_config(args.config)
     out = Path(cfg["output_dir"])
+    print(f"Using data_dir: {cfg['data_dir']}")
+    print(f"Using output_dir: {out}")
+    print(f"Using latest end_date: {cfg['end_date']}")
     ckpt = torch.load(out / "model.pt", map_location="cpu", weights_only=True)
 
     from datetime import datetime, timedelta
@@ -251,7 +265,15 @@ def main() -> None:
     deep_scores = score_latest(panel, feat_cols, ckpt["seq_len"], ckpt, device)
     if deep_scores.empty:
         raise ValueError("No latest scores generated. Check seq_len, end_date, and available feature history.")
-    lgbm_scores = score_latest_lgbm(panel, out) if cfg.get("lgbm", {}).get("enabled", False) else pd.DataFrame()
+
+    # 纯DL模式下不尝试获取LGBM分数
+    lgbm_enabled = cfg.get("lgbm", {}).get("enabled", True)
+    if lgbm_enabled:
+        lgbm_scores = score_latest_lgbm(panel, out)
+    else:
+        lgbm_scores = pd.DataFrame()
+        print("Pure DL mode: skipping LightGBM scores")
+
     scores = blend_latest_scores(deep_scores, lgbm_scores, out, cfg)
     scores = attach_buyable_flag(scores, panel, cfg["strategy"])
     holdings = [x.strip() for x in args.holdings.split(",") if x.strip()]

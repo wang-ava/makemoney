@@ -1,20 +1,21 @@
-# 自动选择项目旁边最新的 documents-export-* 数据包。
-# 如果要固定某一份数据，可以改回类似 ../documents-export-2026-5-19。
-data_dir: auto
-data_dir_glob: ["../documents-export-*", "documents-export-*"]
-output_dir: outputs
+# A股数据 - 方案A: 纯深度学习 (GRU + Transformer)
+# 不使用LightGBM，纯GRU-Transformer模型
 
-# quick.yaml 用于本地快速试跑；default.yaml 面向正式训练/报告。
+data_dir: ../A股数据
+output_dir: outputs_scheme_a
+
+# 数据时间范围
 start_date: "20180101"
 end_date: auto
 train_end: "20241231"
 val_end: auto
 
-# hs300 | all （all = 非ST、非北交所）
+# 股票池: all = 非ST、非北交所
 universe: all
 seq_len: 20
 label_horizon: 1
 
+# 特征配置
 features:
   use_metric: true
   use_moneyflow: true
@@ -23,7 +24,7 @@ features:
   cross_section_rank: true
   fill_missing: true
 
-# 模型选择：gru_transformer, temporal_attention, bilstm_attention, gru_attention, temporal_cnn, inception_time
+# 模型配置: GRU-Transformer
 model:
   name: gru_transformer
   d_model: 96
@@ -34,6 +35,7 @@ model:
   gru_hidden: 48
   dropout: 0.22
 
+# 训练配置
 train:
   batch_size: 1024
   epochs: 18
@@ -59,41 +61,30 @@ train:
   max_minutes: 330
   seed: 42
 
+# LightGBM: 禁用（方案A不使用）
 lgbm:
-  enabled: true
-  objective: lambdarank
-  relevance_bins: 101
-  num_boost_round: 300
-  early_stopping_rounds: 35
-  ndcg_eval_at: [10, 20, 30]
-  num_leaves: 31
-  learning_rate: 0.04
-  feature_fraction: 0.8
-  bagging_fraction: 0.8
-  bagging_freq: 5
-  min_data_in_leaf: 80
-  lambda_l2: 2.0
-  num_threads: 16
-  log_period: 20
-  seed: 42
+  enabled: false
 
+# 集成配置: 纯DL模式，alpha=1.0
 ensemble:
-  alpha: 0.55
-  alpha_grid: [0.35, 0.45, 0.55, 0.65, 0.75]
+  alpha: 1.0
+  alpha_grid: [1.0]
 
+# wandb配置
 wandb:
   enabled: true
   entity: avawang1031
   project: my-awesome-project
-  run_name: stock-dl-full-best-trial
-  group: finalex
+  run_name: stock-dl-scheme-a-pure-dl
+  group: finalex-scheme-a
   mode: online
-  tags: [stock-dl, gru-transformer, lambdarank, finalex, best-trial]
-  notes: "Best-trial full pipeline with GRU-Transformer, LambdaRank and dynamic position strategy with an 80% floor."
+  tags: [stock-dl, gru-transformer, pure-dl, a-share, scheme-a]
+  notes: "方案A: 纯深度学习 GRU-Transformer，不使用LightGBM"
   watch: false
   watch_log_freq: 200
   log_artifacts: true
 
+# 策略配置
 strategy:
   n_hold: 30
   k_trade: 1

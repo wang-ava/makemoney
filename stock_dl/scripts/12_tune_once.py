@@ -113,6 +113,52 @@ CURATED_CANDIDATES: list[dict[str, Any]] = [
             "lgbm": {"num_boost_round": 320, "num_leaves": 63, "learning_rate": 0.04, "min_data_in_leaf": 60, "lambda_l2": 1.5, "feature_fraction": 0.80},
         },
     },
+    # ========== 纯DL方案候选参数（不使用LGBM）==========
+    {
+        "name": "pure_dl_gt96_ic_balanced",
+        "overrides": {
+            "model": {"name": "gru_transformer", "d_model": 96, "num_layers": 1, "dim_feedforward": 192, "head_hidden": 96, "gru_hidden": 48, "dropout": 0.18},
+            "train": {"batch_size": 1536, "lr": 5e-4, "weight_decay": 2e-4, "target_col": "label_rank", "loss": "ic", "date_batch": True, "rank_loss_weight": 0.10, "direction_loss_weight": 0.05, "warmup_epochs": 2},
+            "lgbm": {"enabled": False},
+            "ensemble": {"alpha": 1.0},
+        },
+    },
+    {
+        "name": "pure_dl_gt128_ic_strong",
+        "overrides": {
+            "model": {"name": "gru_transformer", "d_model": 128, "num_layers": 2, "dim_feedforward": 256, "head_hidden": 128, "gru_hidden": 64, "dropout": 0.20},
+            "train": {"batch_size": 1024, "lr": 3e-4, "weight_decay": 1e-4, "target_col": "label_rank", "loss": "ic", "date_batch": True, "rank_loss_weight": 0.12, "direction_loss_weight": 0.06, "warmup_epochs": 3},
+            "lgbm": {"enabled": False},
+            "ensemble": {"alpha": 1.0},
+        },
+    },
+    {
+        "name": "pure_dl_gt64_ic_fast",
+        "overrides": {
+            "model": {"name": "gru_transformer", "d_model": 64, "num_layers": 1, "dim_feedforward": 128, "head_hidden": 64, "gru_hidden": 32, "dropout": 0.15},
+            "train": {"batch_size": 2048, "lr": 8e-4, "weight_decay": 2e-4, "target_col": "label_rank", "loss": "ic", "date_batch": True, "rank_loss_weight": 0.08, "direction_loss_weight": 0.04, "warmup_epochs": 1},
+            "lgbm": {"enabled": False},
+            "ensemble": {"alpha": 1.0},
+        },
+    },
+    {
+        "name": "pure_dl_gt96_huber",
+        "overrides": {
+            "model": {"name": "gru_transformer", "d_model": 96, "num_layers": 2, "dim_feedforward": 192, "head_hidden": 96, "gru_hidden": 48, "dropout": 0.20},
+            "train": {"batch_size": 1536, "lr": 5e-4, "weight_decay": 2e-4, "target_col": "label_cs_z", "loss": "huber", "date_batch": False, "rank_loss_weight": 0.04, "direction_loss_weight": 0.04, "label_smoothing": 0.03, "warmup_epochs": 2},
+            "lgbm": {"enabled": False},
+            "ensemble": {"alpha": 1.0},
+        },
+    },
+    {
+        "name": "pure_dl_bilstm96_ic",
+        "overrides": {
+            "model": {"name": "bilstm_attention", "d_model": 96, "num_layers": 2, "head_hidden": 96, "dropout": 0.18},
+            "train": {"batch_size": 1536, "lr": 5e-4, "weight_decay": 2e-4, "target_col": "label_rank", "loss": "ic", "date_batch": True, "rank_loss_weight": 0.10, "direction_loss_weight": 0.05, "warmup_epochs": 2},
+            "lgbm": {"enabled": False},
+            "ensemble": {"alpha": 1.0},
+        },
+    },
 ]
 
 
@@ -548,7 +594,14 @@ def run_trial(trial_id: str, config_path: Path, shared_panel: Path, trial_dir: P
     run_step(["python", "scripts/03_train.py", "--config", rel_config], "train deep model", env=env)
     if run_lgbm:
         run_step(["python", "scripts/10_train_lgbm.py", "--config", rel_config], "train lgbm", env=env)
-    run_step(["python", "scripts/11_blend_scores.py", "--config", rel_config], "blend scores", env=env)
+    # 纯DL模式跳过blend步骤（或使用alpha=1.0的默认blend）
+    if not run_lgbm:
+        # 纯DL模式：创建纯DL的blend_meta.json
+        blend_meta_path = trial_dir / "blend_meta.json"
+        import json as json_module
+        blend_meta_path.write_text(json_module.dumps({"best_alpha": 1.0, "mode": "pure_dl"}, indent=2))
+    else:
+        run_step(["python", "scripts/11_blend_scores.py", "--config", rel_config], "blend scores", env=env)
     run_step(["python", "scripts/04_eval_ic.py", "--config", rel_config], "evaluate ic", env=env)
     run_step(["python", "scripts/05_backtest.py", "--config", rel_config], "backtest", env=env)
 
@@ -562,6 +615,7 @@ def main() -> None:
     parser.add_argument("--max-minutes", default=os.environ.get("TRIAL_MAX_MINUTES"))
     parser.add_argument("--skip-lgbm", action="store_true", default=os.environ.get("TUNE_SKIP_LGBM", "0") == "1")
     parser.add_argument("--force-panel", action="store_true", default=os.environ.get("FORCE_TUNE_PANEL", "0") == "1")
+    parser.add_argument("--pure-dl", action="store_true", default=False, help="纯DL模式: 不训练LGBM，ensemble alpha=1.0")
     args = parser.parse_args()
 
     base_config_path = (ROOT / args.base_config).resolve()
@@ -570,11 +624,14 @@ def main() -> None:
     base_cfg = resolve_base_paths(read_yaml(base_config_path), base_config_path)
 
     shared_panel = build_shared_panel(base_cfg, tune_dir, force=args.force_panel)
+    run_lgbm = not args.skip_lgbm and not args.pure_dl
+    if args.pure_dl:
+        print("Running in PURE DL mode (LGBM disabled)")
     for _ in range(args.trials):
         trial_id, candidate, config_path, trial_dir = reserve_trial(tune_dir, base_cfg, args.seed, args.max_minutes)
         print(f"Reserved {trial_id}: {candidate['name']}")
         try:
-            run_trial(trial_id, config_path, shared_panel, trial_dir, run_lgbm=not args.skip_lgbm)
+            run_trial(trial_id, config_path, shared_panel, trial_dir, run_lgbm=run_lgbm)
             metrics = collect_metrics(trial_id, candidate, config_path, trial_dir)
             mark_trial(tune_dir, trial_id, "complete", metrics=metrics)
             print(f"Completed {trial_id}: objective/ic_mean={metrics['objective']:.6f}")

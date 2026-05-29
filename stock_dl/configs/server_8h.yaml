@@ -1,11 +1,12 @@
-data_dir: ../documents-export-2026-5-19
+data_dir: auto
+data_dir_glob: ["../documents-export-*", "documents-export-*"]
 output_dir: outputs_server8h
 
 # 服务器 8 小时窗口默认配置：对齐当前 best trial，质量优先，并给后处理和可视化留出余量。
 start_date: "20180101"
-end_date: "20260518"
+end_date: auto
 train_end: "20241231"
-val_end: "20260518"
+val_end: auto
 
 universe: all
 seq_len: 20
