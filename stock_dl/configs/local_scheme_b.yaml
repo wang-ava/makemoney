@@ -1,0 +1,97 @@
+# 方案B: 深度学习+LightGBM - 用于本地推理
+data_dir: ../A股数据
+output_dir: outputs_scheme_b
+start_date: "20180101"
+end_date: auto
+train_end: "20241231"
+val_end: auto
+universe: all
+seq_len: 20
+label_horizon: 1
+
+features:
+  use_metric: true
+  use_moneyflow: true
+  use_market: true
+  use_news: false
+  cross_section_rank: true
+  fill_missing: true
+
+model:
+  name: gru_transformer
+  d_model: 96
+  nhead: 4
+  num_layers: 2
+  dim_feedforward: 192
+  head_hidden: 96
+  gru_hidden: 48
+  dropout: 0.22
+
+train:
+  batch_size: 1024
+  epochs: 18
+  lr: 0.0003
+  early_stop_patience: 5
+  num_workers: 4
+  amp: true
+  max_minutes: 330
+  seed: 42
+
+# 方案B: 启用LightGBM
+lgbm:
+  enabled: true
+  objective: lambdarank
+  relevance_bins: 101
+  num_boost_round: 300
+  early_stopping_rounds: 35
+  ndcg_eval_at: [10, 20, 30]
+  num_leaves: 31
+  learning_rate: 0.04
+  feature_fraction: 0.8
+  bagging_fraction: 0.8
+  bagging_freq: 5
+  min_data_in_leaf: 80
+  lambda_l2: 2.0
+  num_threads: 16
+  seed: 42
+
+ensemble:
+  alpha: 0.75
+  alpha_grid: [0.35, 0.45, 0.55, 0.65, 0.75]
+
+# 策略: 动态持仓
+strategy:
+  initial_cash: 1000000
+  cost_rate: 0.0003
+  slippage: 0.0005
+  # 动态持仓数量（根据市场波动率调整20-60只）
+  adaptive_hold: true
+  adaptive_min_hold: 20    # 市场波动高时最少持20只
+  adaptive_max_hold: 60    # 市场波动低时最多持60只
+  adaptive_low_vol_pct: 0.3   # 波动率低于30% → 持仓60只
+  adaptive_high_vol_pct: 0.7  # 波动率高于70% → 持仓20只
+  k_trade: 2  # 基准换手数量
+  k_trade_grid: [1, 2, 3]
+  turnover_penalty: 0.005
+  risk_filter: true
+  max_abs_pct_chg: 9.5
+  min_amount_quantile: 0.05
+  max_volatility_quantile: 0.98
+  min_list_age_years: 0.25
+  max_mv_quantile: 0.99
+  min_mv_quantile: 0.02
+  max_ret_cut: 8.0
+  adaptive_hold: true
+  adaptive_min_hold: 15
+  adaptive_max_hold: 50
+  momentum_filter: true
+  momentum_rank_col: rank_ret_5d
+  min_momentum_rank: 0.2
+  dynamic_k: true
+  dynamic_position: true
+  min_position_ratio: 0.80
+  base_position_ratio: 0.90
+  max_position_ratio: 1.00
+  use_long_short: false
+  cash_reserve_ratio: 0.0
+  max_positions_per_industry: 5

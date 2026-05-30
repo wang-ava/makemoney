@@ -277,9 +277,33 @@ def main() -> None:
     scores = blend_latest_scores(deep_scores, lgbm_scores, out, cfg)
     scores = attach_buyable_flag(scores, panel, cfg["strategy"])
     holdings = [x.strip() for x in args.holdings.split(",") if x.strip()]
-    n_hold, k_trade = load_best_strategy(cfg, out)
-    buy_s = _buy_scores_with_filters(scores, cfg["strategy"])
     vol_pct = latest_market_vol_percentile(panel, cfg["strategy"])
+
+    # 动态计算持仓数量（根据市场波动率）
+    strategy_cfg = cfg["strategy"]
+    min_hold = strategy_cfg.get("adaptive_min_hold", 20)
+    max_hold = strategy_cfg.get("adaptive_max_hold", 60)
+    low_vol_pct = strategy_cfg.get("adaptive_low_vol_pct", 0.3)
+    high_vol_pct = strategy_cfg.get("adaptive_high_vol_pct", 0.7)
+
+    if vol_pct is not None:
+        if vol_pct <= low_vol_pct:  # 市场波动低 → 多持
+            n_hold = max_hold
+        elif vol_pct >= high_vol_pct:  # 市场波动高 → 少持
+            n_hold = min_hold
+        else:  # 中等波动 → 线性插值
+            ratio = (vol_pct - low_vol_pct) / (high_vol_pct - low_vol_pct)
+            n_hold = int(round(max_hold - ratio * (max_hold - min_hold)))
+    else:
+        n_hold = int(strategy_cfg.get("n_hold", 50))  # 默认50只
+
+    # 动态计算k_trade（换手数量）
+    k_base = int(strategy_cfg.get("k_trade", 2))
+    k_trade = max(1, min(n_hold // 10, k_base + 1))
+
+    print(f"[Dynamic Position] vol_percentile={vol_pct:.3f}, n_hold={n_hold}, k_trade={k_trade}")
+
+    buy_s = _buy_scores_with_filters(scores, cfg["strategy"])
     target_position, position_confidence = choose_target_position(
         buy_s,
         n_hold,
@@ -302,8 +326,23 @@ def main() -> None:
     latest_price = panel[panel["trade_date"].astype(str) == str(last_date)].set_index("ts_code")["close"]
     final_holdings = sorted(({c for c in holdings if c not in orders["sell"]} | set(orders["buy"])))
     portfolio_value = float(args.portfolio_value or cfg["strategy"]["initial_cash"])
-    target_weight = target_position / max(len(final_holdings), 1)
-    target_amount = portfolio_value * target_weight
+
+    # 按分数加权分配资金
+    # 获取所有持仓股票的分数
+    hold_scores = []
+    for c in final_holdings:
+        if c in score_lookup.index:
+            sc = float(score_lookup.at[c, "score"])
+            hold_scores.append((c, sc))
+
+    # 计算分数总和
+    total_score = sum(s for _, s in hold_scores)
+    score_dict = {c: s for c, s in hold_scores}
+
+    # 计算总可用资金（扣除卖出的股票）
+    target_position_ratio = target_position  # 目标仓位比例（如0.8）
+    available_capital = portfolio_value * target_position_ratio
+
     lot_size = max(1, int(args.lot_size))
     rows = []
     for side in ["sell", "buy", "hold"]:
@@ -312,7 +351,16 @@ def main() -> None:
             sc = float(score_lookup.at[c, "score"]) if c in score_lookup.index else None
             buyable = bool(score_lookup.at[c, "buyable"]) if "buyable" in score_lookup.columns and c in score_lookup.index else None
             ref_price = float(latest_price.at[c]) if c in latest_price.index and np.isfinite(latest_price.at[c]) else np.nan
-            row_target_amount = 0.0 if side == "sell" else target_amount
+
+            # 按分数加权计算目标金额
+            if side == "sell":
+                row_target_amount = 0.0
+                weight_ratio = 0.0
+            else:
+                # 该股票占总分数的比例
+                weight_ratio = score_dict.get(c, 0) / total_score if total_score > 0 else 1.0 / len(final_holdings)
+                row_target_amount = available_capital * weight_ratio
+
             shares = 0
             if side != "sell" and np.isfinite(ref_price) and ref_price > 0:
                 shares = int(row_target_amount / ref_price // lot_size * lot_size)
@@ -322,10 +370,10 @@ def main() -> None:
                 "score": sc,
                 "buyable": buyable,
                 "reference_price": ref_price,
-                "target_weight": 0.0 if side == "sell" else target_weight,
+                "weight_ratio": weight_ratio,
                 "target_amount": row_target_amount,
                 "estimated_shares": shares,
-                "target_position_ratio": target_position,
+                "target_position_ratio": target_position_ratio,
                 "position_confidence": position_confidence,
                 "market_vol_percentile": vol_pct,
             })

@@ -94,6 +94,45 @@ python3 scripts/13_ablation.py --config configs/quick.yaml --max-epochs 3 --vari
 ./run_all.sh configs/default.yaml
 ```
 
+## 每日比赛推理
+
+`configs/default.yaml` 已支持自动数据目录和自动最新交易日：
+
+```yaml
+data_dir: auto
+end_date: auto
+val_end: auto
+```
+
+每天盘后从科大云盘同步最新 `documents-export-*` 数据包后，不需要手动输入每只股票涨跌，也不需要每天重训模型。代码会自动选择项目旁边最新的数据包，并读取 `daily/` 目录下最新的交易日 CSV。
+
+首日没有持仓时：
+
+```bash
+cd stock_dl
+python3 scripts/06_infer_orders.py --config configs/default.yaml --holdings "" --portfolio-value 1000000
+```
+
+之后每天把同花顺里的真实持仓传入：
+
+```bash
+python3 scripts/06_infer_orders.py \
+  --config configs/default.yaml \
+  --holdings "000001.SZ,600000.SH" \
+  --portfolio-value 1000000
+```
+
+如果要用 `best-trails` 的纯深度学习模型生成下单清单：
+
+```bash
+python3 scripts/06_infer_orders.py \
+  --config ../best-trails/config.yaml \
+  --holdings "" \
+  --portfolio-value 1000000
+```
+
+脚本会输出 `orders_YYYYMMDD.csv`、`order_details_YYYYMMDD.csv` 和 `scores_YYYYMMDD.csv`。`YYYYMMDD` 是信号所使用的数据日期；例如用 2026-05-29 盘后数据生成 2026-06-01 的交易清单。
+
 ## 107 平台 8 小时默认跑法
 
 首次在 107 平台跑之前，先确认环境装好依赖，尤其是 `lightgbm`：
