@@ -529,8 +529,12 @@ def generate_trading_guide(
 ================================================================================
 """
 
-    # 保存文件
-    guide_path = output_dir / f"trading_guide_{last_date}.txt"
+    # 创建日期目录
+    date_dir = output_dir / "trading_guides" / last_date
+    date_dir.mkdir(parents=True, exist_ok=True)
+
+    # 保存文件到日期目录
+    guide_path = date_dir / "trading_guide.txt"
     with open(guide_path, "w", encoding="utf-8") as f:
         f.write(guide)
 
@@ -558,14 +562,12 @@ def generate_trading_guide(
         })
 
     orders_df = pd.DataFrame(orders)
-    csv_path = output_dir / f"trading_orders_{last_date}.csv"
-    orders_df.to_csv(csv_path, index=False, encoding="utf-8-sig")
+    orders_df.to_csv(date_dir / "trading_orders.csv", index=False, encoding="utf-8-sig")
 
     # 保存备选股票
     if backups:
         backups_df = pd.DataFrame(backups)
-        backup_path = output_dir / f"backup_stocks_{last_date}.csv"
-        backups_df.to_csv(backup_path, index=False, encoding="utf-8-sig")
+        backups_df.to_csv(date_dir / "backup_stocks.csv", index=False, encoding="utf-8-sig")
 
     # 保存完整持仓
     full = []
@@ -586,10 +588,24 @@ def generate_trading_guide(
         })
 
     full_df = pd.DataFrame(full)
-    full_path = output_dir / f"full_positions_{last_date}.csv"
-    full_df.to_csv(full_path, index=False, encoding="utf-8-sig")
+    full_df.to_csv(date_dir / "full_positions.csv", index=False, encoding="utf-8-sig")
 
-    return guide, orders_df
+    # 保存配置信息
+    config_info = {
+        "data_date": last_date,
+        "trading_date": trading_date,
+        "scheme": scheme_name,
+        "portfolio_value": portfolio_value,
+        "target_position": target_position,
+        "n_hold": len(targets),
+        "n_buy": len(actual_buy),
+        "n_sell": len(actual_sell),
+        "allocation_strategy": allocation_strategy,
+    }
+    with open(date_dir / "config.json", "w", encoding="utf-8") as f:
+        json.dump(config_info, f, ensure_ascii=False, indent=2)
+
+    return guide, orders_df, date_dir
 
 
 # ============================================================================
@@ -681,7 +697,7 @@ def main():
     )
 
     # 生成指南
-    guide, orders_df = generate_trading_guide(
+    guide, orders_df, date_dir = generate_trading_guide(
         scores=scores,
         panel=panel,
         current_holdings=holdings,
@@ -696,11 +712,13 @@ def main():
 
     print(guide)
 
-    print(f"\n✓ 文件已保存:")
-    print(f"  {output_dir}/trading_guide_*.txt")
-    print(f"  {output_dir}/trading_orders_*.csv")
-    print(f"  {output_dir}/backup_stocks_*.csv")
-    print(f"  {output_dir}/full_positions_*.csv")
+    print(f"\n✅ 文件已保存到目录:")
+    print(f"   {date_dir}/")
+    print(f"   ├── trading_guide.txt      # 完整交易指南")
+    print(f"   ├── trading_orders.csv    # 买卖订单")
+    print(f"   ├── backup_stocks.csv     # 备选股票")
+    print(f"   ├── full_positions.csv    # 完整持仓")
+    print(f"   └── config.json           # 配置信息")
 
 
 if __name__ == "__main__":
