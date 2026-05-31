@@ -51,14 +51,22 @@ strategy:
   cost_rate: 0.0003
   slippage: 0.0005
   # 动态持仓数量（根据市场波动率调整20-60只）
+  # 动态持仓数量（多指标综合：波动率+IC趋势+置信度）
   adaptive_hold: true
-  adaptive_min_hold: 20    # 市场波动高时最少持20只
-  adaptive_max_hold: 60    # 市场波动低时最多持60只
-  adaptive_low_vol_pct: 0.3   # 波动率低于30% → 持仓60只
-  adaptive_high_vol_pct: 0.7  # 波动率高于70% → 持仓20只
+  adaptive_hold_multi_indicator: true  # 优化：启用多指标持仓数量
+  adaptive_min_hold: 15
+  adaptive_max_hold: 50
+  adaptive_low_vol_pct: 0.3
+  adaptive_high_vol_pct: 0.7
+  adaptive_vol_weight: 0.4    # 波动率权重
+  adaptive_ic_weight: 0.3     # IC趋势权重
+  adaptive_conf_weight: 0.3  # 置信度权重
   k_trade: 2  # 基准换手数量
   k_trade_grid: [1, 2, 3]
   turnover_penalty: 0.005
+  # 优化：阈值触发换手机制
+  score_gap_trigger: true  # 启用阈值触发
+  score_gap_trigger_threshold: 0.03  # 分数差距>3%才换手
   risk_filter: true
   max_abs_pct_chg: 9.5
   min_amount_quantile: 0.05
@@ -76,7 +84,7 @@ strategy:
   dynamic_k: true
   dynamic_position: true
   min_position_ratio: 0.80
-  base_position_ratio: 0.90
+  base_position_ratio: 0.95   # 优化：90% → 95%，增加收益
   max_position_ratio: 1.00
   use_long_short: false
   cash_reserve_ratio: 0.0

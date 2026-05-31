@@ -1,189 +1,35 @@
+"""
+成交量约束回测模块
+
+对 run_backtest 进行增强:
+1. 基于历史日均成交量估算成交率
+2. 根据实际成交率调整持仓
+3. 记录详细的成交约束统计
+"""
+
 from __future__ import annotations
 
-import numpy as np
+from typing import Optional
+
 import pandas as pd
+import numpy as np
+
+from .engine import run_backtest as original_run_backtest
+from .fill_rate import (
+    estimate_daily_volume_stats,
+    estimate_fill_rate,
+    estimate_fill_rate_by_amount,
+    get_market_condition,
+    MarketCondition,
+    FillRateConfig,
+    DEFAULT_CONFIG,
+)
 
 
-def _rolling_percentile(series: pd.Series, lookback: int = 250) -> pd.Series:
-    values = series.astype(float)
-    out = []
-    for i, value in enumerate(values):
-        start = max(0, i - lookback + 1)
-        window = values.iloc[start : i + 1].dropna()
-        if not np.isfinite(value) or window.empty:
-            out.append(0.5)
-        else:
-            out.append(float((window <= value).mean()))
-    return pd.Series(out, index=series.index)
-
-
-def _choose_adaptive_n(base_n: int, vol_pct: float | None, strategy_cfg: dict) -> int:
-    if not strategy_cfg.get("adaptive_hold", False) or vol_pct is None:
-        return int(base_n)
-    min_n = int(strategy_cfg.get("adaptive_min_hold", max(1, base_n // 2)))
-    max_n = int(strategy_cfg.get("adaptive_max_hold", max(base_n, base_n + base_n // 2)))
-    low = float(strategy_cfg.get("adaptive_low_vol_pct", 0.2))
-    high = float(strategy_cfg.get("adaptive_high_vol_pct", 0.8))
-    if vol_pct >= high:
-        return max_n
-    if vol_pct <= low:
-        return min_n
-    return int(base_n)
-
-
-def _compute_n_hold_score(vol_pct: float | None, ic_trend: float | None, confidence: float, strategy_cfg: dict) -> float:
-    """计算持仓数量的综合得分（0-1之间，越高越应多持）
-
-    综合指标:
-    - 波动率得分: vol_score = 1 - vol_pct (波动低→多持)
-    - IC趋势得分: ic_trend_score (IC上升→多持)
-    - 置信度得分: confidence (模型确定→多持)
-    """
-    # 波动率得分 (0.4权重)
-    if vol_pct is not None and np.isfinite(vol_pct):
-        vol_score = 1.0 - float(np.clip(vol_pct, 0.0, 1.0))
-    else:
-        vol_score = 0.5  # 默认中等
-
-    # IC趋势得分 (0.3权重) - ic_trend > 0 表示IC在上升
-    if ic_trend is not None and np.isfinite(ic_trend):
-        # 归一化到0-1，ic_trend通常在-0.1到0.1之间
-        ic_trend_score = float(np.clip((ic_trend + 0.1) / 0.2, 0.0, 1.0))
-    else:
-        ic_trend_score = 0.5  # 默认中等
-
-    # 置信度得分 (0.3权重)
-    confidence_score = float(np.clip(confidence, 0.0, 1.0))
-
-    # 加权综合得分
-    vol_weight = float(strategy_cfg.get("adaptive_vol_weight", 0.4))
-    ic_weight = float(strategy_cfg.get("adaptive_ic_weight", 0.3))
-    conf_weight = float(strategy_cfg.get("adaptive_conf_weight", 0.3))
-
-    n_hold_score = vol_weight * vol_score + ic_weight * ic_trend_score + conf_weight * confidence_score
-    return float(np.clip(n_hold_score, 0.0, 1.0))
-
-
-def _choose_adaptive_n_multi(
-    base_n: int,
-    vol_pct: float | None,
-    ic_trend: float | None,
-    confidence: float,
-    strategy_cfg: dict
-) -> int:
-    """多指标自适应持仓数量计算
-
-    根据以下指标综合决定持仓数量:
-    - 市场波动率 (权重40%)
-    - IC趋势 (权重30%)
-    - 模型置信度 (权重30%)
-    """
-    if not strategy_cfg.get("adaptive_hold", False):
-        return int(base_n)
-
-    min_n = int(strategy_cfg.get("adaptive_min_hold", max(1, base_n // 2)))
-    max_n = int(strategy_cfg.get("adaptive_max_hold", max(base_n, base_n + base_n // 2)))
-
-    # 计算综合得分
-    n_hold_score = _compute_n_hold_score(vol_pct, ic_trend, confidence, strategy_cfg)
-
-    # 线性插值计算持仓数量
-    n_hold = int(round(min_n + n_hold_score * (max_n - min_n)))
-    return int(np.clip(n_hold, min_n, max_n))
-
-
-def _filter_momentum(day: pd.DataFrame, buy_scores: pd.Series, strategy_cfg: dict) -> pd.Series:
-    if not strategy_cfg.get("momentum_filter", False):
-        return buy_scores
-    col = strategy_cfg.get("momentum_rank_col", "rank_ret_5d")
-    if col not in day.columns:
-        return buy_scores
-    threshold = float(strategy_cfg.get("min_momentum_rank", 0.2))
-    keep = day[day[col].fillna(0.5) >= threshold].set_index("ts_code")
-    filtered = buy_scores[buy_scores.index.isin(keep.index)]
-    return filtered if not filtered.empty else buy_scores
-
-
-def _choose_dynamic_k(day_scores: pd.Series, buy_scores: pd.Series, holdings: dict[str, float], base_k: int, strategy_cfg: dict) -> int:
-    if not strategy_cfg.get("dynamic_k", False) or not holdings:
-        return int(base_k)
-    held = [c for c in holdings if c in day_scores.index]
-    candidates = buy_scores.drop(index=[c for c in holdings if c in buy_scores.index], errors="ignore")
-    if not held or candidates.empty:
-        return int(base_k)
-    gap = float(candidates.max() - day_scores.loc[held].min())
-    high = float(strategy_cfg.get("score_gap_high", 0.10))
-    low = float(strategy_cfg.get("score_gap_low", 0.02))
-    if gap > high:
-        return int(base_k + int(strategy_cfg.get("dynamic_k_step", 2)))
-    if gap < low:
-        return max(1, int(base_k) - int(strategy_cfg.get("dynamic_k_step", 1)))
-    return int(base_k)
-
-
-def _score_confidence(buy_scores: pd.Series, n_long: int, strategy_cfg: dict) -> float:
-    scores = buy_scores.replace([np.inf, -np.inf], np.nan).dropna().astype(float)
-    if len(scores) < 2:
-        return 0.5
-    top_n = min(max(3, int(n_long)), len(scores))
-    spread = float(scores.nlargest(top_n).mean() - scores.median())
-    std = float(scores.std(ddof=0))
-    if not np.isfinite(spread) or not np.isfinite(std) or std <= 1e-12:
-        return 0.5
-    z_spread = spread / std
-    low = float(strategy_cfg.get("position_score_z_low", 0.4))
-    high = float(strategy_cfg.get("position_score_z_high", 1.2))
-    if high <= low:
-        return 0.5
-    return float(np.clip((z_spread - low) / (high - low), 0.0, 1.0))
-
-
-def choose_target_position(
-    buy_scores: pd.Series,
-    n_long: int,
-    strategy_cfg: dict,
-    vol_pct: float | None = None,
-    cash_reserve_ratio: float = 0.0,
-) -> tuple[float, float]:
-    """Choose a daily target long position ratio, bounded by the 80% floor."""
-    legacy_target = 1.0 - float(cash_reserve_ratio)
-    min_position = float(strategy_cfg.get("min_position_ratio", legacy_target))
-    max_position = float(strategy_cfg.get("max_position_ratio", 1.0))
-    min_position = float(np.clip(min_position, 0.0, 1.0))
-    max_position = float(np.clip(max(max_position, min_position), min_position, 1.0))
-
-    if not strategy_cfg.get("dynamic_position", False):
-        target = float(strategy_cfg.get("target_position_ratio", legacy_target))
-        return float(np.clip(target, min_position, max_position)), 0.5
-
-    target_floor = max(
-        min_position,
-        float(strategy_cfg.get("min_target_position_ratio", min_position + float(strategy_cfg.get("position_floor_buffer", 0.0)))),
-    )
-    target_floor = float(np.clip(target_floor, min_position, max_position))
-    base_position = float(strategy_cfg.get("base_position_ratio", (min_position + max_position) / 2.0))
-    confidence = _score_confidence(buy_scores, n_long, strategy_cfg)
-    vol_score = 0.5 if vol_pct is None or not np.isfinite(vol_pct) else 1.0 - float(np.clip(vol_pct, 0.0, 1.0))
-    target = (
-        base_position
-        + float(strategy_cfg.get("position_confidence_weight", 0.08)) * (confidence - 0.5)
-        + float(strategy_cfg.get("position_vol_weight", 0.12)) * (vol_score - 0.5)
-    )
-    return float(np.clip(target, target_floor, max_position)), confidence
-
-
-def _market_value(holdings: dict[str, float], prices: pd.DataFrame, date: str) -> float:
-    value = 0.0
-    for code, shares in holdings.items():
-        p = prices.at[date, code] if code in prices.columns else np.nan
-        if np.isfinite(p):
-            value += shares * p
-    return float(value)
-
-
-def run_backtest(
+def run_backtest_with_fill_constraint(
     scores: pd.DataFrame,
     prices: pd.DataFrame,
+    panel: Optional[pd.DataFrame] = None,
     n_hold: int = 10,
     k_trade: int = 2,
     initial_cash: float = 1_000_000.0,
@@ -193,20 +39,161 @@ def run_backtest(
     short_ratio: float = 0.5,
     strategy_cfg: dict | None = None,
     cash_reserve_ratio: float = 0.0,
+    use_fill_constraint: bool = True,
+    fill_rate_config: FillRateConfig = DEFAULT_CONFIG,
+    volume_window: int = 20,
 ) -> dict:
     """
-    scores: trade_date, ts_code, score
-    prices: trade_date, ts_code, open, close
-    策略：用 d 日盘后 signal，在下一交易日开盘执行；收盘记账。
+    带成交量约束的回测
 
-    Enhanced with optional long-short strategy and advanced risk management.
+    新增参数:
+    - use_fill_constraint: 是否启用成交约束
+    - fill_rate_config: 成交率配置
+    - volume_window: 计算日均成交量的窗口天数
+
+    Returns: 与 original_run_backtest 相同, 新增以下字段:
+        - fill_rate_stats: {
+            'avg_fill_rate': 平均成交率,
+            'avg_market_fill_rate': 按市场环境的平均成交率,
+            'underfilled_days': 未足额成交天数,
+            'avg_position_achievement': 平均仓位达成率,
+          }
     """
-    signal_dates = sorted(scores["trade_date"].astype(str).unique())
-    price_dates = sorted(prices["trade_date"].astype(str).unique())
-    if len(signal_dates) < 2 or len(price_dates) < 2:
-        return {"equity_curve": [], "metrics": {}}
-
     strategy_cfg = strategy_cfg or {}
+
+    # 如果不启用成交约束, 直接调用原函数
+    if not use_fill_constraint or panel is None:
+        result = original_run_backtest(
+            scores=scores,
+            prices=prices,
+            n_hold=n_hold,
+            k_trade=k_trade,
+            initial_cash=initial_cash,
+            cost_rate=cost_rate,
+            slippage=slippage,
+            use_long_short=use_long_short,
+            short_ratio=short_ratio,
+            strategy_cfg=strategy_cfg,
+            cash_reserve_ratio=cash_reserve_ratio,
+        )
+        # 添加空的成交率统计
+        result["metrics"]["fill_rate_stats"] = {
+            "enabled": False,
+            "avg_fill_rate": 1.0,
+        }
+        return result
+
+    # 预处理: 计算每只股票的日均成交量
+    print(f"  计算日均成交量 (窗口={volume_window}天)...")
+    panel_copy = panel.copy()
+    panel_copy["trade_date"] = panel_copy["trade_date"].astype(str)
+
+    # 单位修正: vol=手数->股数, amount=万元->元
+    if "vol" in panel_copy.columns:
+        panel_copy["vol"] = panel_copy["vol"] * 100
+    if "amount" in panel_copy.columns:
+        panel_copy["amount"] = panel_copy["amount"] * 10000  # 万元转元
+
+    volume_stats = estimate_daily_volume_stats(panel_copy, window=volume_window)
+    volume_stats_dict = volume_stats.set_index("ts_code").to_dict("index")
+
+    # 记录成交率统计
+    fill_rate_records = []
+    position_achievement_records = []
+
+    # 预处理价格数据
+    px = prices.copy()
+    px["trade_date"] = px["trade_date"].astype(str)
+
+    # 获取涨跌停数据
+    limit_pct = float(strategy_cfg.get("limit_pct_chg", 9.5))
+    if "pct_chg" in px.columns:
+        pct_chg_pivot = px.pivot(index="trade_date", columns="ts_code", values="pct_chg")
+    else:
+        pct_chg_pivot = None
+
+    # 获取成交量数据
+    if "vol" in px.columns:
+        vol_pivot = px.pivot(index="trade_date", columns="ts_code", values="vol")
+    else:
+        vol_pivot = None
+
+    # 准备市场环境数据
+    market_conditions = {}
+    if "pct_chg" in px.columns:
+        for date in px["trade_date"].unique():
+            day_data = px[px["trade_date"] == date]
+            limit_up_count = (day_data["pct_chg"] >= limit_pct).sum()
+            if limit_up_count > 100:
+                market_conditions[date] = MarketCondition.HOT
+            elif limit_up_count > 50:
+                market_conditions[date] = MarketCondition.WARM
+            else:
+                market_conditions[date] = MarketCondition.NORMAL
+
+    def get_fill_rate(
+        code: str,
+        target_shares: float,
+        price: float,
+        date: str,
+        is_buy: bool = True,
+    ) -> float:
+        """获取单只股票的成交率"""
+        # 获取日均成交量
+        vol_info = volume_stats_dict.get(code, {})
+        daily_vol = vol_info.get("avg_volume", 0)
+        daily_amount = vol_info.get("avg_amount", 0)
+
+        if daily_vol <= 0:
+            return 0.8  # 默认80%
+
+        # 获取涨跌停状态
+        is_limit_up = False
+        is_limit_down = False
+        if pct_chg_pivot is not None and date in pct_chg_pivot.index and code in pct_chg_pivot.columns:
+            pct = pct_chg_pivot.at[date, code]
+            if np.isfinite(pct):
+                is_limit_up = pct >= limit_pct
+                is_limit_down = pct <= -limit_pct
+
+        # 获取市场环境
+        market_cond = market_conditions.get(date, MarketCondition.NORMAL)
+
+        # 估算成交率 (使用金额方式, 更稳定)
+        target_amount = target_shares * price
+        fill_rate = estimate_fill_rate_by_amount(
+            target_amount=target_amount,
+            avg_daily_amount=daily_amount,
+            market_condition=market_cond,
+            is_limit_up=is_limit_up,
+            is_limit_down=is_limit_down,
+            config=fill_rate_config,
+        )
+
+        return fill_rate
+
+    # ========== 修改后的回测逻辑 ==========
+
+    signal_dates = sorted(scores["trade_date"].astype(str).unique())
+    price_dates = sorted(px["trade_date"].astype(str).unique())
+
+    if len(signal_dates) < 2:
+        result = original_run_backtest(
+            scores=scores,
+            prices=prices,
+            n_hold=n_hold,
+            k_trade=k_trade,
+            initial_cash=initial_cash,
+            cost_rate=cost_rate,
+            slippage=slippage,
+            use_long_short=use_long_short,
+            short_ratio=short_ratio,
+            strategy_cfg=strategy_cfg,
+            cash_reserve_ratio=cash_reserve_ratio,
+        )
+        result["metrics"]["fill_rate_stats"] = {"enabled": True, "avg_fill_rate": 0.8}
+        return result
+
     cash_reserve_ratio = float(np.clip(cash_reserve_ratio, 0.0, 0.95))
     position_floor = float(strategy_cfg.get("min_position_ratio", 1.0 - cash_reserve_ratio))
     holdings: dict[str, float] = {}
@@ -222,13 +209,10 @@ def run_backtest(
         "limit_sell_blocked": 0,
     }
 
-    px = prices.copy()
-    px["trade_date"] = px["trade_date"].astype(str)
     close_pivot = px.pivot(index="trade_date", columns="ts_code", values="close")
     open_col = "open" if "open" in px.columns else "close"
     open_pivot = px.pivot(index="trade_date", columns="ts_code", values=open_col)
-    pct_chg_pivot = px.pivot(index="trade_date", columns="ts_code", values="pct_chg") if "pct_chg" in px.columns else None
-    limit_pct = float(strategy_cfg.get("limit_pct_chg", strategy_cfg.get("max_abs_pct_chg", 9.5)))
+
     enforce_t1 = bool(strategy_cfg.get("enforce_t1", True))
 
     def can_trade(code: str, date: str, side: str) -> bool:
@@ -251,6 +235,17 @@ def run_backtest(
             return False
         return can_trade(code, date, "sell")
 
+    from .engine import (
+        _filter_momentum,
+        _choose_adaptive_n,
+        _choose_adaptive_n_multi,
+        _choose_dynamic_k,
+        _score_confidence,
+        choose_target_position,
+        _market_value,
+        _rolling_percentile,
+    )
+
     vol_pct_by_date: dict[str, float] = {}
     ic_trend_by_date: dict[str, float] = {}
     use_multi_indicator = strategy_cfg.get("adaptive_hold_multi_indicator", False)
@@ -267,7 +262,6 @@ def run_backtest(
             pct = _rolling_percentile(vol_by_date, int(strategy_cfg.get("adaptive_lookback", 250)))
             vol_pct_by_date = pct.to_dict()
 
-        # 计算IC趋势（过去20天IC的变化）
         if use_multi_indicator and "ic" in scores.columns:
             ic_by_date = scores.groupby("trade_date")["ic"].mean().sort_index()
             if len(ic_by_date) >= 20:
@@ -298,7 +292,6 @@ def run_backtest(
 
         cost = cost_rate + slippage
 
-        # 先计算目标仓位和置信度
         target_position, position_confidence = choose_target_position(
             buy_scores,
             n_hold,
@@ -307,7 +300,6 @@ def run_backtest(
             cash_reserve_ratio,
         )
 
-        # 使用多指标自适应持仓数量
         if use_multi_indicator:
             ic_trend = ic_trend_by_date.get(d)
             n_long = _choose_adaptive_n_multi(
@@ -322,20 +314,30 @@ def run_backtest(
             max(n_long, 1),
         )
 
+        # 记录当日成交率
+        day_fill_rates = []
+
         if not holdings:
             picks = buy_scores.nlargest(n_long).index.tolist()
             available_cash = cash * target_position
             per = available_cash / max(len(picks), 1)
+
             for code in picks:
                 if not can_trade(code, exec_date, "buy"):
                     continue
                 p = open_pivot.at[exec_date, code] if code in open_pivot.columns else np.nan
-                if np.isfinite(p) and p > 0:
-                    spend = min(per, cash)
-                    holdings[code] = spend * (1 - cost) / p
+                if np.isfinite(p) and p > 0 and p > 0:
+                    # 计算目标股数和成交率
+                    target_shares = min(per, cash) / (p * (1 + cost))
+                    fill_rate = get_fill_rate(code, target_shares, p, exec_date, is_buy=True)
+                    actual_shares = target_shares * fill_rate
+
+                    holdings[code] = holdings.get(code, 0) + actual_shares
                     long_buy_dates[code] = exec_date
-                    cash -= spend
-                    total_turnover += spend
+                    cash -= actual_shares * p * (1 - cost)
+                    total_turnover += actual_shares * p
+
+                    day_fill_rates.append(fill_rate)
 
             if use_long_short and n_short > 0:
                 short_picks = buy_scores.nsmallest(n_short).index.tolist()
@@ -363,11 +365,13 @@ def run_backtest(
                     continue
                 p = open_pivot.at[exec_date, code] if code in open_pivot.columns else np.nan
                 if np.isfinite(p) and p > 0:
+                    # 卖出不受成交率限制, 卖多少算多少
                     gross = holdings.pop(code) * p
                     long_buy_dates.pop(code, None)
                     cash += gross * (1 - cost)
                     total_turnover += gross
                     executed_rebalance_sells += 1
+                    day_fill_rates.append(1.0)  # 卖出按100%算
 
             if strategy_cfg.get("dynamic_position_sell_down", True):
                 mv_open = _market_value(holdings, open_pivot, exec_date)
@@ -401,16 +405,22 @@ def run_backtest(
                 target_cash = (1.0 - target_position) * long_equity_open
                 available_cash = max(0.0, cash - target_cash)
                 per = available_cash / len(buy_codes)
+
                 for code in buy_codes:
                     if not can_trade(code, exec_date, "buy"):
                         continue
                     p = open_pivot.at[exec_date, code] if code in open_pivot.columns else np.nan
                     if np.isfinite(p) and p > 0:
-                        spend = min(per, cash)
-                        holdings[code] = holdings.get(code, 0) + spend * (1 - cost) / p
+                        target_shares = min(per, cash) / (p * (1 + cost))
+                        fill_rate = get_fill_rate(code, target_shares, p, exec_date, is_buy=True)
+                        actual_shares = target_shares * fill_rate
+
+                        holdings[code] = holdings.get(code, 0) + actual_shares
                         long_buy_dates[code] = exec_date
-                        cash -= spend
-                        total_turnover += spend
+                        cash -= actual_shares * p * (1 - cost)
+                        total_turnover += actual_shares * p
+
+                        day_fill_rates.append(fill_rate)
 
             if use_long_short and n_short > 0 and short_holdings:
                 short_held = [c for c in short_holdings if c in day_scores.index]
@@ -438,6 +448,28 @@ def run_backtest(
                             short_holdings[code] = short_holdings.get(code, 0) + spend * (1 - cost) / p
                             short_cash -= spend
                             total_turnover += spend
+
+        # 计算当日成交率统计
+        if day_fill_rates:
+            avg_fill_rate = np.mean(day_fill_rates)
+            fill_rate_records.append({
+                "date": exec_date,
+                "avg_fill_rate": avg_fill_rate,
+                "min_fill_rate": np.min(day_fill_rates),
+                "max_fill_rate": np.max(day_fill_rates),
+                "trade_count": len(day_fill_rates),
+            })
+
+        # 计算仓位达成率
+        target_value = n_long * (initial_cash / n_long)
+        actual_value = sum(holdings.get(code, 0) * close_pivot.at[exec_date, code]
+                          if code in close_pivot.columns else 0
+                          for code in buy_scores.nlargest(n_long).index.tolist() if code in holdings)
+        position_achievement = actual_value / (target_value + 1e-9) if target_value > 0 else 1.0
+        position_achievement_records.append({
+            "date": exec_date,
+            "position_achievement": position_achievement,
+        })
 
         mv = 0.0
         for code, sh in holdings.items():
@@ -472,6 +504,7 @@ def run_backtest(
                 "n_short_positions": len(short_holdings),
                 "target_n_hold": n_long,
                 "day_k_trade": day_k,
+                "day_fill_rate": fill_rate_records[-1]["avg_fill_rate"] if fill_rate_records else 1.0,
             }
         )
 
@@ -496,6 +529,30 @@ def run_backtest(
         initial_short_equity = initial_cash * short_ratio
         short_return = eq["short_equity"].iloc[-1] / initial_short_equity - 1 if initial_short_equity > 0 else 0.0
 
+    # 计算成交率统计
+    if fill_rate_records:
+        fill_df = pd.DataFrame(fill_rate_records)
+        fill_rate_stats = {
+            "enabled": True,
+            "avg_fill_rate": float(fill_df["avg_fill_rate"].mean()),
+            "min_fill_rate": float(fill_df["avg_fill_rate"].min()),
+            "underfilled_days": int((fill_df["avg_fill_rate"] < 0.9).sum()),
+            "avg_trade_count_per_day": float(fill_df["trade_count"].mean()),
+        }
+    else:
+        fill_rate_stats = {
+            "enabled": True,
+            "avg_fill_rate": 1.0,
+            "min_fill_rate": 1.0,
+            "underfilled_days": 0,
+            "avg_trade_count_per_day": 0.0,
+        }
+
+    if position_achievement_records:
+        pos_df = pd.DataFrame(position_achievement_records)
+        fill_rate_stats["avg_position_achievement"] = float(pos_df["position_achievement"].mean())
+        fill_rate_stats["min_position_achievement"] = float(pos_df["position_achievement"].min())
+
     return {
         "equity_curve": eq,
         "metrics": {
@@ -516,5 +573,6 @@ def run_backtest(
             "position_floor_breach_days": int((eq["position_ratio"] + 1e-9 < position_floor).sum()),
             "dynamic_position": bool(strategy_cfg.get("dynamic_position", False)),
             **trade_blocks,
+            "fill_rate_stats": fill_rate_stats,
         },
     }

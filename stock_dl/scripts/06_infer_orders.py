@@ -150,6 +150,34 @@ def _dynamic_k(scores: pd.DataFrame, holdings: list[str], buy_s: pd.Series, k_tr
     return int(k_trade)
 
 
+def _score_gap_trigger(scores: pd.DataFrame, holdings: list[str], buy_s: pd.Series, strategy_cfg: dict) -> bool:
+    """阈值触发换手：只有当分数差距超过阈值时才换手
+
+    优化点：减少无谓的交易损耗
+    """
+    if not strategy_cfg.get("score_gap_trigger", False) or not holdings:
+        return True  # 默认执行换手
+
+    s = scores.set_index("ts_code")["score"]
+    held = [c for c in holdings if c in s.index]
+    candidates = buy_s.drop(index=[c for c in holdings if c in buy_s.index], errors="ignore")
+
+    if candidates.empty:
+        return False  # 没有候选股票，不操作
+    if not held:
+        return True  # 空仓时，只要有候选股票就允许建仓
+
+    # 计算分数差距
+    best_candidate = float(candidates.max())
+    worst_held = float(s.loc[held].min())
+
+    # 优化：分数差距超过阈值才换手
+    trigger_threshold = float(strategy_cfg.get("score_gap_trigger_threshold", 0.03))
+    gap = best_candidate - worst_held
+
+    return gap > trigger_threshold
+
+
 def _enforce_min_hold_count(
     orders: dict[str, list[str]],
     holdings: list[str],
@@ -179,6 +207,11 @@ def make_orders(scores: pd.DataFrame, holdings: list[str], n_hold: int, k_trade:
     strategy_cfg = strategy_cfg or {}
     s = scores.set_index("ts_code")["score"]
     buy_s = _buy_scores_with_filters(scores, strategy_cfg)
+
+    # 阈值触发：分数差距不够大时不换手
+    if not _score_gap_trigger(scores, holdings, buy_s, strategy_cfg):
+        return {"buy": [], "sell": [], "hold": list(holdings)}
+
     k_trade = min(max(1, _dynamic_k(scores, holdings, buy_s, k_trade, strategy_cfg)), max(n_hold, 1))
     if not holdings:
         buy = buy_s.nlargest(n_hold).index.tolist()
@@ -238,7 +271,7 @@ def main() -> None:
 
     end = cfg["end_date"]
     end_dt = datetime.strptime(end, "%Y%m%d")
-    start = (end_dt - timedelta(days=120)).strftime("%Y%m%d")
+    start = (end_dt - timedelta(days=200)).strftime("%Y%m%d")
     panel = build_panel(
         cfg["data_dir"],
         start_date=start,
