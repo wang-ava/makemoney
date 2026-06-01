@@ -2,7 +2,7 @@
 data_dir: ../A股数据
 output_dir: outputs_scheme_b
 start_date: "20180101"
-end_date: auto
+end_date: "20260529"
 train_end: "20241231"
 val_end: auto
 universe: all
@@ -66,11 +66,11 @@ strategy:
   slippage: 0.0005
   # 动态持仓数量（根据市场波动率调整20-60只）
   adaptive_hold: true
-  adaptive_min_hold: 20    # 市场波动高时最少持20只
-  adaptive_max_hold: 60    # 市场波动低时最多持60只
-  adaptive_low_vol_pct: 0.3   # 波动率低于30% → 持仓60只
-  adaptive_high_vol_pct: 0.7  # 波动率高于70% → 持仓20只
-  k_trade: 2  # 基准换手数量
+  adaptive_min_hold: 20      # 波动率高时最少持20只
+  adaptive_max_hold: 50      # 波动率低时最多持50只
+  adaptive_low_vol_pct: 0.3
+  adaptive_high_vol_pct: 0.7
+  k_trade: 6  # 基准换手数量（13b 扫描最优：n_hold=20 时 Sharpe=1.604 年化=42.93%）
   k_trade_grid: [1, 2, 3]
   turnover_penalty: 0.005
   risk_filter: true
@@ -81,13 +81,14 @@ strategy:
   max_mv_quantile: 0.99
   min_mv_quantile: 0.02
   max_ret_cut: 8.0
-  adaptive_hold: true
-  adaptive_min_hold: 15
-  adaptive_max_hold: 50
   momentum_filter: true
   momentum_rank_col: rank_ret_5d
   min_momentum_rank: 0.2
   dynamic_k: true
+  # 持仓质量驱动的动态换手
+  dynamic_k_bad_min: 1
+  dynamic_k_bad_buffer: 0
+  # dynamic_k_max: 跟随持仓规模（默认 = len(held)）
   dynamic_position: true
   min_position_ratio: 0.80
   base_position_ratio: 0.90
@@ -95,3 +96,7 @@ strategy:
   use_long_short: false
   cash_reserve_ratio: 0.0
   max_positions_per_industry: 5
+  # 同花顺手动下单价格 slack（让卖单快速成交、买单优先吃单）
+  sell_slack: 0.002
+  buy_slack: 0.001
+  limit_pct: 0.10

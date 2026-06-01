@@ -105,20 +105,58 @@ def _filter_momentum(day: pd.DataFrame, buy_scores: pd.Series, strategy_cfg: dic
 
 
 def _choose_dynamic_k(day_scores: pd.Series, buy_scores: pd.Series, holdings: dict[str, float], base_k: int, strategy_cfg: dict) -> int:
+    """动态换手数量（持仓质量驱动，与 14_generate_trading_guide.py 保持一致）
+
+    核心：换手数跟随当前持仓的"烂股数量"动态调整
+    - 烂股 = 持仓中分数 < 候选池中位数的股
+    - k = max(base_k, 烂股数 + bad_buffer)
+    - 持仓质量都好（无烂股）且分数差距小 → 减换手
+    - 候选质量特别好（远高于持仓） → 加换手
+    - 上限：单日换手不超过持仓数的一半
+    """
     if not strategy_cfg.get("dynamic_k", False) or not holdings:
         return int(base_k)
     held = [c for c in holdings if c in day_scores.index]
     candidates = buy_scores.drop(index=[c for c in holdings if c in buy_scores.index], errors="ignore")
     if not held or candidates.empty:
         return int(base_k)
-    gap = float(candidates.max() - day_scores.loc[held].min())
+
+    held_scores = day_scores.loc[held]
+    held_mean = float(held_scores.mean())
+    held_min = float(held_scores.min())
+    candidate_max = float(candidates.max())
+    candidate_median = float(candidates.median())
+
+    # 烂股数
+    bad_stocks_count = int((held_scores < candidate_median).sum())
+    bad_min = int(strategy_cfg.get("dynamic_k_bad_min", 1))
+    bad_buffer = int(strategy_cfg.get("dynamic_k_bad_buffer", 0))
+
+    k = int(base_k)
+
+    # 1) 烂股数 >= bad_min → 必须换掉
+    if bad_stocks_count >= bad_min:
+        k = max(k, bad_stocks_count + bad_buffer)
+
+    # 2) 候选质量好 → 多换手
     high = float(strategy_cfg.get("score_gap_high", 0.10))
     low = float(strategy_cfg.get("score_gap_low", 0.02))
-    if gap > high:
-        return int(base_k + int(strategy_cfg.get("dynamic_k_step", 2)))
-    if gap < low:
-        return max(1, int(base_k) - int(strategy_cfg.get("dynamic_k_step", 1)))
-    return int(base_k)
+    gap = candidate_max - held_min
+    good_candidates_count = int((candidates > held_mean).sum())
+    if good_candidates_count >= bad_min and gap > high:
+        k = k + int(strategy_cfg.get("dynamic_k_step", 2))
+
+    # 3) 烂股 = 0 且差距小 → 减少换手
+    if bad_stocks_count == 0 and gap < low:
+        k = max(1, k - int(strategy_cfg.get("dynamic_k_step", 1)))
+
+    # 4) 上限保护：理论换手上限 = max(烂股数, 好候选数)
+    max_k_default = max(bad_stocks_count, good_candidates_count)
+    max_k_cfg = strategy_cfg.get("dynamic_k_max", None)
+    max_k = int(max_k_cfg) if max_k_cfg is not None else max_k_default
+    k = min(k, max_k)
+
+    return max(1, k)
 
 
 def _score_confidence(buy_scores: pd.Series, n_long: int, strategy_cfg: dict) -> float:

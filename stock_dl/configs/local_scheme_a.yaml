@@ -2,7 +2,7 @@
 data_dir: ../A股数据
 output_dir: outputs_scheme_a
 start_date: "20180101"
-end_date: auto
+end_date: "20260529"
 train_end: "20241231"
 val_end: auto
 universe: all
@@ -54,14 +54,14 @@ strategy:
   # 动态持仓数量（多指标综合：波动率+IC趋势+置信度）
   adaptive_hold: true
   adaptive_hold_multi_indicator: true  # 优化：启用多指标持仓数量
-  adaptive_min_hold: 15
-  adaptive_max_hold: 50
+  adaptive_min_hold: 20      # 波动率高时最少持20只
+  adaptive_max_hold: 50       # 波动率低时最多持50只
   adaptive_low_vol_pct: 0.3
   adaptive_high_vol_pct: 0.7
   adaptive_vol_weight: 0.4    # 波动率权重
   adaptive_ic_weight: 0.3     # IC趋势权重
   adaptive_conf_weight: 0.3  # 置信度权重
-  k_trade: 2  # 基准换手数量
+  k_trade: 6  # 基准换手数量（13b 扫描最优：n_hold=20 时 Sharpe=1.604 年化=42.93%）
   k_trade_grid: [1, 2, 3]
   turnover_penalty: 0.005
   # 优化：阈值触发换手机制
@@ -75,13 +75,15 @@ strategy:
   max_mv_quantile: 0.99
   min_mv_quantile: 0.02
   max_ret_cut: 8.0
-  adaptive_hold: true
-  adaptive_min_hold: 15
-  adaptive_max_hold: 50
   momentum_filter: true
   momentum_rank_col: rank_ret_5d
   min_momentum_rank: 0.2
   dynamic_k: true
+  debug_dynamic_k: true  # 调试：打印 dynamic_k 决策依据（持仓质量驱动的烂股数等）
+  # 持仓质量驱动的动态换手
+  dynamic_k_bad_min: 1        # 烂股数 >= 此值时触发强制换手
+  dynamic_k_bad_buffer: 0     # 烂股基础上额外加几个
+  # dynamic_k_max: 跟随持仓规模（持仓 20-50 只 → 默认 max_k = len(held)，允许 0-50 烂股全覆盖）
   dynamic_position: true
   min_position_ratio: 0.80
   base_position_ratio: 0.95   # 优化：90% → 95%，增加收益
@@ -89,3 +91,7 @@ strategy:
   use_long_short: false
   cash_reserve_ratio: 0.0
   max_positions_per_industry: 5
+  # 同花顺手动下单价格 slack（让卖单快速成交、买单优先吃单）
+  sell_slack: 0.002       # 卖出价低于收盘价 0.2%（确保同花顺快速成交）
+  buy_slack: 0.001        # 买入价高于收盘价 0.1%（优先吃单但不过度溢价）
+  limit_pct: 0.10         # 涨跌停限制（主板 10%；创业板/科创板 20%）

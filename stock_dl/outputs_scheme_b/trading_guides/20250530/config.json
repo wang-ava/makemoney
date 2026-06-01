@@ -1,0 +1,15 @@
+{
+  "data_date": "20250530",
+  "trading_date": "2025-05-31",
+  "scheme": "方案B(DL+LGBM) (score_weighted)",
+  "portfolio_value": 1000000.0,
+  "target_position": 0.8800000000000001,
+  "n_hold": 50,
+  "n_buy": 50,
+  "n_sell": 0,
+  "dynamic_k": 50,
+  "base_k": 2,
+  "vol_pct": 1.0,
+  "position_confidence": 1.0,
+  "allocation_strategy": "score_weighted"
+}

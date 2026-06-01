@@ -1,0 +1,15 @@
+{
+  "data_date": "20260529",
+  "trading_date": "2026-05-30",
+  "scheme": "方案A(纯DL) (score_weighted)",
+  "portfolio_value": 1000000.0,
+  "target_position": 0.9299999999999999,
+  "n_hold": 41,
+  "n_buy": 8,
+  "n_sell": 0,
+  "dynamic_k": 8,
+  "base_k": 6,
+  "vol_pct": 1.0,
+  "position_confidence": 1.0,
+  "allocation_strategy": "score_weighted"
+}
