@@ -47,6 +47,11 @@ def attach_buyable_flag(scores: pd.DataFrame, panel: pd.DataFrame, strategy_cfg:
         (risk["amount"] >= risk["amount_cut"])
     )
 
+    # 绝对成交额硬过滤（避免小盘股滑点）
+    min_amount_abs = float(strategy_cfg.get("min_avg_amount_abs", 0.0))
+    if min_amount_abs > 0:
+        risk["buyable"] &= risk["amount"].fillna(0) >= min_amount_abs
+
     if "volatility_20d" in risk.columns:
         risk["vol_cut"] = risk.groupby("trade_date")["volatility_20d"].transform(lambda s: s.quantile(max_vol_q))
         risk["buyable"] &= risk["volatility_20d"].fillna(0) <= risk["vol_cut"].fillna(np.inf)

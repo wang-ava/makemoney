@@ -2,7 +2,7 @@
 data_dir: ../A股数据
 output_dir: outputs_scheme_b
 start_date: "20180101"
-end_date: "20260529"
+end_date: "20260601"
 train_end: "20241231"
 val_end: auto
 universe: all
@@ -59,42 +59,70 @@ ensemble:
   alpha: 0.75
   alpha_grid: [0.35, 0.45, 0.55, 0.65, 0.75]
 
-# 策略: 动态持仓
+# 策略: 动态持仓（与方案A保持同一套交易规则，只让模型评分不同）
 strategy:
   initial_cash: 1000000
-  cost_rate: 0.0003
-  slippage: 0.0005
-  # 动态持仓数量（根据市场波动率调整20-60只）
+  cost_rate: 0.0010
+  slippage: 0.0015
+  # 动态持仓数量：高波动少持、低波动适度多持
   adaptive_hold: true
-  adaptive_min_hold: 20      # 波动率高时最少持20只
-  adaptive_max_hold: 50      # 波动率低时最多持50只
+  adaptive_hold_multi_indicator: true
+  adaptive_min_hold: 24
+  adaptive_max_hold: 32
   adaptive_low_vol_pct: 0.3
   adaptive_high_vol_pct: 0.7
-  k_trade: 6  # 基准换手数量（13b 扫描最优：n_hold=20 时 Sharpe=1.604 年化=42.93%）
-  k_trade_grid: [1, 2, 3]
+  adaptive_vol_weight: 0.4
+  adaptive_ic_weight: 0.3
+  adaptive_conf_weight: 0.3
+  n_hold: 30
+  k_trade: 2
+  k_trade_grid: [1, 2, 3, 4, 5]
   turnover_penalty: 0.005
+  # 阈值触发换手：使用横截面百分位分差，避免 A/B 分数尺度不同
+  score_gap_trigger: true
+  score_gap_trigger_threshold: 0.05
   risk_filter: true
   max_abs_pct_chg: 9.5
-  min_amount_quantile: 0.05
+  min_amount_quantile: 0.20
+  min_avg_amount_abs: 5e4
   max_volatility_quantile: 0.98
-  min_list_age_years: 0.25
-  max_mv_quantile: 0.99
-  min_mv_quantile: 0.02
+  min_list_age_years: 0.5
+  max_mv_quantile: 0.95
+  min_mv_quantile: 0.05
   max_ret_cut: 8.0
   momentum_filter: true
   momentum_rank_col: rank_ret_5d
   min_momentum_rank: 0.2
   dynamic_k: true
+  dynamic_k_use_rank_scores: true
+  debug_dynamic_k: false
   # 持仓质量驱动的动态换手
   dynamic_k_bad_min: 1
   dynamic_k_bad_buffer: 0
-  # dynamic_k_max: 跟随持仓规模（默认 = len(held)）
+  dynamic_k_max: 6
+  dynamic_k_step: 1
+  score_gap_low: 0.02
+  score_gap_high: 0.10
+  sell_outsiders: true
+  sell_outsiders_mode: bad
+  sell_outsiders_unlimited: false
+  sell_outsiders_max: 2
+  amplify_buys: false
+  hand_expand_enabled: false
+  hand_expand_min_gap_pct: 0.01
+  topup_enabled: false
+  topup_min_gap_pct: 0.02
+  topup_max_extra: 0
+  topup_min_liquidity: 0.3
+  topup_min_score_pct: 0.5
+  topup_prefetch_codes: 0
+  enforce_cash_limit: true
   dynamic_position: true
-  min_position_ratio: 0.80
-  base_position_ratio: 0.90
-  max_position_ratio: 1.00
+  min_position_ratio: 0.70
+  base_position_ratio: 0.85
+  max_position_ratio: 0.92
   use_long_short: false
-  cash_reserve_ratio: 0.0
+  cash_reserve_ratio: 0.08
   max_positions_per_industry: 5
   # 同花顺手动下单价格 slack（让卖单快速成交、买单优先吃单）
   sell_slack: 0.002

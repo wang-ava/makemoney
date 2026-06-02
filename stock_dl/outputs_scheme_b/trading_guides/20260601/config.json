@@ -1,0 +1,19 @@
+{
+  "data_date": "20260601",
+  "trading_date": "2026-06-02",
+  "scheme": "方案B(DL+LGBM) [策略修复后] (score_weighted)",
+  "portfolio_value": 1025794.0,
+  "target_position": 0.8300000000000001,
+  "n_hold": 28,
+  "n_buy": 4,
+  "n_sell": 2,
+  "n_target_buy": 28,
+  "n_target_sell": 0,
+  "n_outsider_sell_candidates": 7,
+  "n_outsider_sell_executed": 2,
+  "dynamic_k": 6,
+  "base_k": 2,
+  "vol_pct": 1.0,
+  "position_confidence": 1.0,
+  "allocation_strategy": "score_weighted"
+}

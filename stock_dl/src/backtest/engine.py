@@ -110,18 +110,27 @@ def _choose_dynamic_k(day_scores: pd.Series, buy_scores: pd.Series, holdings: di
     核心：换手数跟随当前持仓的"烂股数量"动态调整
     - 烂股 = 持仓中分数 < 候选池中位数的股
     - k = max(base_k, 烂股数 + bad_buffer)
-    - 持仓质量都好（无烂股）且分数差距小 → 减换手
     - 候选质量特别好（远高于持仓） → 加换手
-    - 上限：单日换手不超过持仓数的一半
+    - 持仓质量都好（无烂股）且分数差距小 → 减换手
+    - 若开启 score_gap_trigger 且没有烂股、分差不够 → 不换手
+    - 上限：max(烂股数, 好候选数)（cfg 中 dynamic_k_max 可覆盖）
     """
     if not strategy_cfg.get("dynamic_k", False) or not holdings:
         return int(base_k)
-    held = [c for c in holdings if c in day_scores.index]
-    candidates = buy_scores.drop(index=[c for c in holdings if c in buy_scores.index], errors="ignore")
+
+    if strategy_cfg.get("dynamic_k_use_rank_scores", True):
+        decision_scores = day_scores.rank(pct=True)
+        decision_buy_scores = decision_scores.reindex(buy_scores.index).dropna()
+    else:
+        decision_scores = day_scores
+        decision_buy_scores = buy_scores
+
+    held = [c for c in holdings if c in decision_scores.index]
+    candidates = decision_buy_scores.drop(index=[c for c in holdings if c in decision_buy_scores.index], errors="ignore")
     if not held or candidates.empty:
         return int(base_k)
 
-    held_scores = day_scores.loc[held]
+    held_scores = decision_scores.loc[held]
     held_mean = float(held_scores.mean())
     held_min = float(held_scores.min())
     candidate_max = float(candidates.max())
@@ -143,6 +152,12 @@ def _choose_dynamic_k(day_scores: pd.Series, buy_scores: pd.Series, holdings: di
     low = float(strategy_cfg.get("score_gap_low", 0.02))
     gap = candidate_max - held_min
     good_candidates_count = int((candidates > held_mean).sum())
+
+    if strategy_cfg.get("score_gap_trigger", False) and bad_stocks_count == 0:
+        trigger_threshold = float(strategy_cfg.get("score_gap_trigger_threshold", low))
+        if gap <= trigger_threshold:
+            return 0
+
     if good_candidates_count >= bad_min and gap > high:
         k = k + int(strategy_cfg.get("dynamic_k_step", 2))
 
@@ -355,10 +370,8 @@ def run_backtest(
         else:
             n_long = _choose_adaptive_n(n_hold, vol_pct_by_date.get(d), strategy_cfg)
         n_short = int(n_hold * short_ratio) if use_long_short else 0
-        day_k = min(
-            max(1, _choose_dynamic_k(day_scores, buy_scores, holdings, k_trade, strategy_cfg)),
-            max(n_long, 1),
-        )
+        # 与 14_generate_trading_guide.py 完全一致：允许 score_gap_trigger 把噪音换手降到 0
+        day_k = _choose_dynamic_k(day_scores, buy_scores, holdings, k_trade, strategy_cfg)
 
         if not holdings:
             picks = buy_scores.nlargest(n_long).index.tolist()

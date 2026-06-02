@@ -2,7 +2,7 @@
 data_dir: ../A股数据
 output_dir: outputs_scheme_a
 start_date: "20180101"
-end_date: "20260529"
+end_date: "20260601"
 train_end: "20241231"
 val_end: auto
 universe: all
@@ -45,53 +45,75 @@ ensemble:
   alpha: 1.0
   alpha_grid: [1.0]
 
-# 策略: 动态持仓
+# 策略: 动态持仓（2026-06-02 反思后调整）
 strategy:
   initial_cash: 1000000
-  cost_rate: 0.0003
-  slippage: 0.0005
-  # 动态持仓数量（根据市场波动率调整20-60只）
-  # 动态持仓数量（多指标综合：波动率+IC趋势+置信度）
+  cost_rate: 0.0010        # 保守计入佣金/印花税等交易成本
+  slippage: 0.0015         # 小盘股和手动下单滑点
+  # 动态持仓数量：高波动少持、低波动适度多持
   adaptive_hold: true
-  adaptive_hold_multi_indicator: true  # 优化：启用多指标持仓数量
-  adaptive_min_hold: 20      # 波动率高时最少持20只
-  adaptive_max_hold: 50       # 波动率低时最多持50只
+  adaptive_hold_multi_indicator: true
+  adaptive_min_hold: 24
+  adaptive_max_hold: 32
   adaptive_low_vol_pct: 0.3
   adaptive_high_vol_pct: 0.7
-  adaptive_vol_weight: 0.4    # 波动率权重
-  adaptive_ic_weight: 0.3     # IC趋势权重
-  adaptive_conf_weight: 0.3  # 置信度权重
-  k_trade: 6  # 基准换手数量（13b 扫描最优：n_hold=20 时 Sharpe=1.604 年化=42.93%）
-  k_trade_grid: [1, 2, 3]
+  adaptive_vol_weight: 0.4
+  adaptive_ic_weight: 0.3
+  adaptive_conf_weight: 0.3
+  n_hold: 30
+  k_trade: 2
+  k_trade_grid: [1, 2, 3, 4, 5]
   turnover_penalty: 0.005
-  # 优化：阈值触发换手机制
-  score_gap_trigger: true  # 启用阈值触发
-  score_gap_trigger_threshold: 0.03  # 分数差距>3%才换手
+  # 阈值触发换手：使用横截面百分位分差，避免 A/B 分数尺度不同
+  score_gap_trigger: true
+  score_gap_trigger_threshold: 0.05
+  # 风险过滤
   risk_filter: true
   max_abs_pct_chg: 9.5
-  min_amount_quantile: 0.05
-  max_volatility_quantile: 0.98
-  min_list_age_years: 0.25
-  max_mv_quantile: 0.99
-  min_mv_quantile: 0.02
+  min_amount_quantile: 0.20
+  min_avg_amount_abs: 5e4     # amount单位约为千元：过滤成交额低于约5000万元
+  min_list_age_years: 0.5
+  max_mv_quantile: 0.95
+  min_mv_quantile: 0.05
   max_ret_cut: 8.0
   momentum_filter: true
   momentum_rank_col: rank_ret_5d
   min_momentum_rank: 0.2
+  # 动态 K 换手（核心修复）
   dynamic_k: true
-  debug_dynamic_k: true  # 调试：打印 dynamic_k 决策依据（持仓质量驱动的烂股数等）
-  # 持仓质量驱动的动态换手
-  dynamic_k_bad_min: 1        # 烂股数 >= 此值时触发强制换手
-  dynamic_k_bad_buffer: 0     # 烂股基础上额外加几个
-  # dynamic_k_max: 跟随持仓规模（持仓 20-50 只 → 默认 max_k = len(held)，允许 0-50 烂股全覆盖）
+  dynamic_k_use_rank_scores: true
+  debug_dynamic_k: false
+  dynamic_k_bad_min: 1
+  dynamic_k_bad_buffer: 0
+  dynamic_k_max: 6
+  dynamic_k_step: 1
+  score_gap_low: 0.02
+  score_gap_high: 0.10
+  # 候选外清理：只卖"烂股"（分数<候选中位 且 不在top候选）
+  sell_outsiders: true
+  sell_outsiders_mode: bad
+  sell_outsiders_unlimited: false
+  sell_outsiders_max: 2
+  # 买入放大链：全部关闭（让动态 K 真正生效）
+  amplify_buys: false
+  hand_expand_enabled: false
+  hand_expand_min_gap_pct: 0.01
+  topup_enabled: false
+  topup_min_gap_pct: 0.02
+  topup_max_extra: 0
+  topup_min_liquidity: 0.3
+  topup_min_score_pct: 0.5
+  topup_prefetch_codes: 0
+  enforce_cash_limit: true
+  # 目标仓位：高波动日主动留现金
   dynamic_position: true
-  min_position_ratio: 0.80
-  base_position_ratio: 0.95   # 优化：90% → 95%，增加收益
-  max_position_ratio: 1.00
+  min_position_ratio: 0.70
+  base_position_ratio: 0.85
+  max_position_ratio: 0.92
   use_long_short: false
-  cash_reserve_ratio: 0.0
+  cash_reserve_ratio: 0.08
   max_positions_per_industry: 5
-  # 同花顺手动下单价格 slack（让卖单快速成交、买单优先吃单）
-  sell_slack: 0.002       # 卖出价低于收盘价 0.2%（确保同花顺快速成交）
-  buy_slack: 0.001        # 买入价高于收盘价 0.1%（优先吃单但不过度溢价）
-  limit_pct: 0.10         # 涨跌停限制（主板 10%；创业板/科创板 20%）
+  # 价格 slack
+  sell_slack: 0.002
+  buy_slack: 0.001
+  limit_pct: 0.10
