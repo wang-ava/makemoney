@@ -1,0 +1,156 @@
+# Server 8h retrain: Scheme B, short-term tradable target plus LGBM blend.
+# Objective: signal before market open, buy next open, evaluate next close.
+seed: 2027
+data_dir: auto
+data_dir_glob:
+  - "../A股数据"
+  - "A股数据"
+  - "../documents-export-*"
+  - "documents-export-*"
+output_dir: outputs_server8h_scheme_b_short
+start_date: "20200101"
+end_date: auto
+train_end: "20241231"
+val_end: auto
+universe: all
+seq_len: 20
+label_horizon: 1
+label_mode: next_open_to_next_close
+clip_return: 0.08
+features:
+  use_metric: true
+  use_moneyflow: true
+  use_market: true
+  use_news: false
+  cross_section_rank: true
+  cross_section_norm: true
+  fill_missing: true
+  rolling_windows: [5, 10, 20, 60]
+model:
+  name: gru_transformer
+  d_model: 80
+  nhead: 4
+  num_layers: 2
+  dim_feedforward: 160
+  dropout: 0.24
+  gru_hidden: 40
+  fusion_hidden: 128
+  head_hidden: 80
+train:
+  batch_size: 2048
+  epochs: 12
+  lr: 0.00038
+  weight_decay: 0.00030
+  early_stop_patience: 3
+  early_stop_metric: val_topk_excess
+  topk_for_metric: 30
+  target_col: label_rank
+  loss: ic
+  huber_beta: 0.5
+  date_batch: true
+  rank_loss_weight: 0.12
+  direction_loss_weight: 0.04
+  rank_top_frac: 0.2
+  label_smoothing: 0.0
+  focal_gamma: 0.0
+  grad_clip: 1.0
+  warmup_epochs: 2
+  num_workers: 4
+  prefetch_factor: 2
+  amp: true
+  matmul_precision: high
+  max_minutes: 150
+  seed: 2027
+tradable_label_filter: true
+label_limit_up_pct: 9.5
+loss:
+  mse_weight: 0.45
+  rank_weight: 0.40
+  dir_weight: 0.15
+lgbm:
+  enabled: true
+  objective: lambdarank
+  relevance_bins: 101
+  max_minutes: 65
+  num_boost_round: 220
+  early_stopping_rounds: 30
+  ndcg_eval_at: [10, 20, 30]
+  learning_rate: 0.045
+  num_leaves: 63
+  max_depth: 8
+  min_data_in_leaf: 80
+  feature_fraction: 0.80
+  bagging_fraction: 0.80
+  bagging_freq: 1
+  lambda_l1: 0.10
+  lambda_l2: 0.30
+  num_threads: 16
+  log_period: 20
+  seed: 2027
+ensemble:
+  alpha: 0.65
+  alpha_grid: [0.45, 0.55, 0.65, 0.75, 0.85]
+  selection_metric: topk_excess
+  topk_for_metric: 30
+strategy:
+  score_col: blended_score
+  n_hold: 30
+  k_trade: 1
+  initial_cash: 1000000
+  cost_rate: 0.0003
+  slippage: 0.0005
+  auto_tune: true
+  n_hold_grid: [20, 30, 40]
+  k_trade_grid: [1, 2]
+  turnover_penalty: 0.010
+  objective_recent_window: 60
+  recent_return_weight: 3.0
+  risk_filter: true
+  max_abs_pct_chg: 6.5
+  min_amount_quantile: 0.35
+  min_avg_amount_abs: 1.5e5
+  max_volatility_quantile: 0.98
+  min_list_age_years: 0.5
+  max_mv_quantile: 0.95
+  min_mv_quantile: 0.15
+  max_ret_cut: 5.0
+  exclude_code_prefixes: ["301", "688", "8", "003", "001"]
+  adaptive_hold: true
+  adaptive_min_hold: 20
+  adaptive_max_hold: 40
+  momentum_filter: true
+  momentum_rank_col: rank_ret_5d
+  min_momentum_rank: 0.35
+  dynamic_k: true
+  dynamic_k_use_rank_scores: true
+  dynamic_k_bad_min: 1
+  dynamic_k_bad_buffer: 0
+  dynamic_k_max: 2
+  dynamic_k_step: 1
+  score_gap_trigger: true
+  score_gap_trigger_threshold: 0.08
+  score_gap_low: 0.02
+  score_gap_high: 0.10
+  dynamic_position: true
+  min_position_ratio: 0.82
+  base_position_ratio: 0.88
+  max_position_ratio: 0.92
+  buy_threshold: 0.62
+  sell_threshold: 0.30
+  max_buy_premium: 0.004
+  sell_discount: 0.006
+  min_trade_lot: 100
+  cash_reserve: 0.08
+  cash_reserve_ratio: 0.08
+  max_position_pct: 0.92
+  max_positions_per_industry: 4
+backtest:
+  start: "20250101"
+  end: auto
+  top_k: 30
+  fee_bps: 3
+  slippage_bps: 5
+wandb:
+  project: a_share_short
+  run_name: server8h_scheme_b_short
+  mode: offline

@@ -8,13 +8,21 @@ import pandas as pd
 from .engine import run_backtest
 
 
-def strategy_objective(metrics: dict, turnover_penalty: float = 0.01) -> float:
-    return (
+def strategy_objective(
+    metrics: dict,
+    turnover_penalty: float = 0.01,
+    recent_return_key: str | None = None,
+    recent_return_weight: float = 0.0,
+) -> float:
+    score = (
         float(metrics.get("sharpe", 0.0))
         + 2.0 * float(metrics.get("total_return", 0.0))
         + float(metrics.get("max_drawdown", 0.0))
         - turnover_penalty * float(metrics.get("turnover", 0.0))
     )
+    if recent_return_key and recent_return_weight:
+        score += float(recent_return_weight) * float(metrics.get(recent_return_key, 0.0))
+    return score
 
 
 def tune_strategy(scores: pd.DataFrame, prices: pd.DataFrame, cfg: dict) -> tuple[dict, pd.DataFrame]:
@@ -40,10 +48,21 @@ def tune_strategy(scores: pd.DataFrame, prices: pd.DataFrame, cfg: dict) -> tupl
                 cash_reserve_ratio=strategy.get("cash_reserve_ratio", 0.0),
             )
             metrics = result.get("metrics", {})
+            recent_window = int(strategy.get("objective_recent_window", 0) or 0)
+            recent_return_key = None
+            if recent_window > 1:
+                eq = result.get("equity_curve")
+                if isinstance(eq, pd.DataFrame) and not eq.empty and "equity" in eq.columns:
+                    sub = eq.tail(recent_window)
+                    if len(sub) > 1 and float(sub["equity"].iloc[0]) > 0:
+                        recent_return_key = f"recent_return_{recent_window}"
+                        metrics[recent_return_key] = float(sub["equity"].iloc[-1] / sub["equity"].iloc[0] - 1.0)
             row = {"n_hold": int(n_hold), "k_trade": int(k_trade), **metrics}
             row["objective"] = strategy_objective(
                 metrics,
                 turnover_penalty=float(strategy.get("turnover_penalty", 0.01)),
+                recent_return_key=recent_return_key,
+                recent_return_weight=float(strategy.get("recent_return_weight", 0.0)),
             )
             rows.append(row)
 
