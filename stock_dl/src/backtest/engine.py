@@ -25,9 +25,9 @@ def _choose_adaptive_n(base_n: int, vol_pct: float | None, strategy_cfg: dict) -
     low = float(strategy_cfg.get("adaptive_low_vol_pct", 0.2))
     high = float(strategy_cfg.get("adaptive_high_vol_pct", 0.8))
     if vol_pct >= high:
-        return max_n
-    if vol_pct <= low:
         return min_n
+    if vol_pct <= low:
+        return max_n
     return int(base_n)
 
 

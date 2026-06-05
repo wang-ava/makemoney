@@ -47,6 +47,11 @@ def attach_buyable_flag(scores: pd.DataFrame, panel: pd.DataFrame, strategy_cfg:
         (risk["amount"] >= risk["amount_cut"])
     )
 
+    exclude_prefixes = tuple(str(p) for p in strategy_cfg.get("exclude_code_prefixes", []) if str(p))
+    if exclude_prefixes:
+        raw_code = risk["ts_code"].astype(str).str.split(".", regex=False).str[0]
+        risk["buyable"] &= ~raw_code.str.startswith(exclude_prefixes)
+
     # 绝对成交额硬过滤（避免小盘股滑点）
     min_amount_abs = float(strategy_cfg.get("min_avg_amount_abs", 0.0))
     if min_amount_abs > 0:

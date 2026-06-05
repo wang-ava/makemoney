@@ -1,12 +1,13 @@
 #!/bin/bash
 # 一键运行每日交易信号生成
-# 用法: ./run_daily.sh 或者 ./run_daily.sh "000001.SZ,600016.SH,..."
+# 用法: ./run_daily.sh 或者 ./run_daily.sh "000001.SZ:1000,600016.SH:500,..."
 
 set -e
 
 # 配置
 SCHEME="a"  # a = 纯DL, b = DL+LGBM
 PORTFOLIO_VALUE=1000000  # 组合总价值
+HOLDINGS_UNIT="${2:-shares}"  # shares=股数, hands=手数
 CONFIG_FILE="configs/local_scheme_${SCHEME}.yaml"
 OUTPUT_DIR="outputs_scheme_${SCHEME}"
 
@@ -41,8 +42,11 @@ if [ -n "$LATEST_ORDER" ]; then
     echo ""
     echo ">>> 生成交易指南..."
     python scripts/14_generate_trading_guide.py \
-        --scheme ${SCHEME} \
-        --portfolio-value ${PORTFOLIO_VALUE}
+        --config ${CONFIG_FILE} \
+        --scheme-name "方案$([ "$SCHEME" = "a" ] && echo "A(纯DL)" || echo "B(DL+LGBM)")" \
+        --portfolio-value ${PORTFOLIO_VALUE} \
+        --holdings-unit ${HOLDINGS_UNIT} \
+        --holdings "${HOLDINGS}"
 
     echo ""
     echo "=========================================="

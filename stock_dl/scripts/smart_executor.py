@@ -22,12 +22,11 @@
 from __future__ import annotations
 
 import argparse
-import csv
 import json
 import sys
 import time
-from dataclasses import dataclass, asdict
-from datetime import datetime, timedelta
+from dataclasses import dataclass
+from datetime import datetime
 from enum import Enum
 from pathlib import Path
 from typing import Optional
@@ -38,12 +37,16 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from src.backtest.fill_rate import (
-    SmartExecutor,
     FillRateConfig,
     MarketCondition,
     estimate_fill_rate_by_amount,
-    get_market_condition,
     DEFAULT_CONFIG,
+)
+from src.trading.ths_client import (
+    ThsClient,
+    ThsOrder,
+    normalize_stock_code,
+    round_lot_shares,
 )
 
 
@@ -138,7 +141,7 @@ class LiveBrokerAdapter:
         pass
 
 
-classXQAdapter(LiveBrokerAdapter):
+class XQAdapter(LiveBrokerAdapter):
     """XQ Broker (迅投) 适配器示例"""
 
     def __init__(self, config: dict):
@@ -157,6 +160,152 @@ classXQAdapter(LiveBrokerAdapter):
 
     def get_order_status(self, order_id: str) -> dict:
         raise NotImplementedError("需要实现XQ查询")
+
+
+class ThsBrokerAdapter(LiveBrokerAdapter):
+    """同花顺模拟盘适配器。"""
+
+    def __init__(self, config: dict):
+        super().__init__(config)
+        self.client: ThsClient | None = None
+        self.order_dates: dict[str, str] = {}
+        self.order_targets: dict[str, dict] = {}
+        self.post_submit_delay = float(config.get("post_submit_delay", 0.8))
+
+    def connect(self) -> bool:
+        self.client = ThsClient()
+        self.client.get_fund()
+        return True
+
+    def _require_client(self) -> ThsClient:
+        if self.client is None:
+            raise ConnectionError("THS adapter is not connected")
+        return self.client
+
+    @staticmethod
+    def _side_label(side: str) -> str:
+        return "买入" if side.lower() == "buy" else "卖出"
+
+    @staticmethod
+    def _to_float(value, default: float = 0.0) -> float:
+        try:
+            return float(str(value).replace(",", ""))
+        except (TypeError, ValueError):
+            return default
+
+    @staticmethod
+    def _to_int(value, default: int = 0) -> int:
+        try:
+            return int(float(str(value).replace(",", "")))
+        except (TypeError, ValueError):
+            return default
+
+    def _match_order(
+        self,
+        orders: list[ThsOrder],
+        known_ids: set[str],
+        ts_code: str,
+        side: str,
+        price: float,
+        shares: int,
+    ) -> ThsOrder | None:
+        plain_code = normalize_stock_code(ts_code)
+        side_label = self._side_label(side)
+        candidates = []
+        for order in orders:
+            if order.order_id in known_ids:
+                continue
+            if normalize_stock_code(order.stock_code) != plain_code:
+                continue
+            if order.side != side_label:
+                continue
+            if self._to_int(order.amount) != shares:
+                continue
+            if abs(self._to_float(order.price) - price) > 0.011:
+                continue
+            candidates.append(order)
+        if not candidates:
+            return None
+        return sorted(candidates, key=lambda o: (o.order_date, o.time, o.order_id))[-1]
+
+    def submit_order(self, ts_code: str, side: str, price: float, shares: int) -> str:
+        client = self._require_client()
+        shares = round_lot_shares(shares)
+        before_ids = {order.order_id for order in client.get_orders()}
+        result = client.submit_order(ts_code, side, price, shares)
+        time.sleep(self.post_submit_delay)
+        after_orders = client.get_orders()
+        matched = self._match_order(after_orders, before_ids, ts_code, side, result.price, shares)
+
+        if matched is None:
+            order_id = f"ths-immediate-{normalize_stock_code(ts_code)}-{int(time.time() * 1000)}"
+            self.order_targets[order_id] = {
+                "ts_code": ts_code,
+                "side": side,
+                "price": result.price,
+                "shares": shares,
+                "immediate": True,
+                "payload": result.payload,
+            }
+            return order_id
+
+        self.order_dates[matched.order_id] = matched.order_date
+        self.order_targets[matched.order_id] = {
+            "ts_code": ts_code,
+            "side": side,
+            "price": result.price,
+            "shares": shares,
+            "immediate": False,
+            "payload": result.payload,
+        }
+        return matched.order_id
+
+    def cancel_order(self, order_id: str) -> bool:
+        target = self.order_targets.get(order_id, {})
+        if target.get("immediate"):
+            return True
+        client = self._require_client()
+        order_date = self.order_dates.get(order_id)
+        client.cancel_order(order_id, order_date)
+        return True
+
+    def get_order_status(self, order_id: str) -> dict:
+        target = self.order_targets.get(order_id, {})
+        target_shares = self._to_int(target.get("shares"))
+        target_price = self._to_float(target.get("price"))
+
+        if target.get("immediate"):
+            return {
+                "status": "filled",
+                "filled_shares": target_shares,
+                "avg_price": target_price,
+            }
+
+        client = self._require_client()
+        open_order = next((order for order in client.get_orders() if order.order_id == order_id), None)
+        if open_order is None:
+            return {
+                "status": "filled",
+                "filled_shares": target_shares,
+                "avg_price": target_price,
+            }
+
+        status_text = open_order.status or ""
+        open_amount = self._to_int(open_order.amount)
+        if "废" in status_text or "拒" in status_text:
+            status = "rejected"
+            filled = 0
+        elif "部" in status_text:
+            status = "partial"
+            filled = max(0, target_shares - open_amount)
+        else:
+            status = "submitted"
+            filled = 0
+        return {
+            "status": status,
+            "filled_shares": filled,
+            "avg_price": self._to_float(open_order.price, target_price),
+        }
 
 
 class SmartOrderExecutor:
@@ -271,6 +420,8 @@ class SmartOrderExecutor:
 
     def _execute_live(self, order: Order, market_condition: MarketCondition) -> ExecutionResult:
         """实盘执行"""
+        if self.broker is None:
+            raise RuntimeError("live mode requires a broker adapter")
         start_time = time.time()
         executions = []
         remaining_shares = order.shares
@@ -281,12 +432,15 @@ class SmartOrderExecutor:
             # 计算下单价格和数量
             if retry == 0:
                 # 第一批: 激进单
-                batch_shares = int(remaining_shares * self.batch_ratio)
+                batch_shares = round_lot_shares(max(100, int(remaining_shares * self.batch_ratio)))
                 price_adj = self.price_improvement
             else:
                 # 后续批次: 正常单
-                batch_shares = remaining_shares
+                batch_shares = round_lot_shares(remaining_shares)
                 price_adj = self.price_improvement * (0.5 + retry * 0.2)  # 越来越激进
+            if batch_shares <= 0:
+                break
+            batch_shares = min(batch_shares, remaining_shares)
 
             if order.side == "buy":
                 batch_price = order.price * (1 + price_adj)
@@ -471,13 +625,37 @@ def load_orders(filepath: str) -> list[Order]:
     """加载订单"""
     df = pd.read_csv(filepath)
     orders = []
+
+    def cell(row: pd.Series, name: str, default=0):
+        value = row.get(name, default)
+        if pd.isna(value):
+            return default
+        return value
+
     for _, row in df.iterrows():
-        orders.append(Order(
-            ts_code=row["ts_code"],
-            side=row["side"].lower(),
-            price=float(row["price"]),
-            shares=int(row["shares"]),
-        ))
+        if {"ts_code", "side", "price", "shares"}.issubset(df.columns):
+            ts_code = str(cell(row, "ts_code", ""))
+            side = str(cell(row, "side", "")).lower()
+            price = float(cell(row, "price", 0))
+            shares = round_lot_shares(cell(row, "shares", 0))
+        elif {"操作", "股票代码"}.issubset(df.columns):
+            action = str(cell(row, "操作", ""))
+            ts_code = str(cell(row, "股票代码", ""))
+            if "买" in action:
+                side = "buy"
+                price = float(cell(row, "建议买入价", 0))
+                shares = round_lot_shares(cell(row, "买入股数", 0))
+            elif "卖" in action:
+                side = "sell"
+                price = float(cell(row, "建议卖出价", 0))
+                shares = round_lot_shares(cell(row, "卖出股数", 0))
+            else:
+                continue
+        else:
+            raise ValueError("orders file must contain ts_code/side/price/shares or 操作/股票代码 columns")
+        if shares <= 0 or price <= 0 or side not in {"buy", "sell"}:
+            continue
+        orders.append(Order(ts_code=ts_code, side=side, price=price, shares=shares))
     return orders
 
 
@@ -488,7 +666,10 @@ def main():
                         help="执行模式: simulation(模拟) 或 live(实盘)")
     parser.add_argument("--output", "-out", help="输出报告路径")
     parser.add_argument("--config", "-c", help="配置文件路径")
-    parser.add_argument("--broker", "-b", choices=["xq", "gf", "ht"], help="券商: xq(迅投), gf(广发), ht(华泰)")
+    parser.add_argument("--broker", "-b", choices=["ths", "xq", "gf", "ht"], default="ths",
+                        help="券商: ths(同花顺模拟盘), xq(迅投), gf(广发), ht(华泰)")
+    parser.add_argument("--confirm-live", action="store_true",
+                        help="实盘/模拟盘委托确认开关；live 模式必须显式提供")
     parser.add_argument("--report", "-r", help="查看已有报告")
     args = parser.parse_args()
 
@@ -512,10 +693,26 @@ def main():
     orders = load_orders(args.orders)
     print(f"Loaded {len(orders)} orders from {args.orders}")
 
+    if args.mode == "live" and not args.confirm_live:
+        print("Refusing live mode without --confirm-live. Use simulation first, then rerun with explicit confirmation.")
+        return
+
+    broker_adapter: LiveBrokerAdapter | None = None
+    if args.mode == "live":
+        if args.broker == "ths":
+            broker_adapter = ThsBrokerAdapter(config)
+        elif args.broker == "xq":
+            broker_adapter = XQAdapter(config)
+        else:
+            raise NotImplementedError(f"broker {args.broker} is not implemented")
+        broker_adapter.connect()
+
+    config["simulation_mode"] = args.mode == "simulation"
+
     # 创建执行器
     executor = SmartOrderExecutor(
         config=config,
-        simulation_mode=(args.mode == "simulation"),
+        broker_adapter=broker_adapter,
     )
 
     # 执行订单

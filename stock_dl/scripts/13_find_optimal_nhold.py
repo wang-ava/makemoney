@@ -158,6 +158,7 @@ def main():
         panel,
         cross_section_rank=cfg["features"]["cross_section_rank"],
         label_horizon=cfg.get("label_horizon", 1),
+        label_mode=cfg.get("label_mode", "close_to_next_close"),
         fill_missing=cfg["features"].get("fill_missing", True),
     )
     feat_cols = ckpt.get("feat_cols") or feature_columns(panel)

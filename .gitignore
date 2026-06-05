@@ -10,11 +10,21 @@ env/
 # Large exported datasets and archives.
 /documents-export-2026-5-19/
 /documents-export-2026-5-19.zip
+/A股数据/
+/astock_data_*.tar.gz
 
 # Generated experiment artifacts.
 /stock_dl/outputs/
 /stock_dl/outputs_quick/
+/stock_dl/outputs_scheme_a/
+/stock_dl/outputs_scheme_b/
+/stock_dl/outputs_server8h*/
+/stock_dl/outputs_tuning*/
+/stock_dl/backtest_inputs/
+/stock_dl/backtest_results/
 /outputs/
+*.parquet
+*.pt
 
 # Local result archives.
 *.zip

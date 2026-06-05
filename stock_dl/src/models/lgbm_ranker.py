@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import os
+import time
 from pathlib import Path
 from typing import Any
 
@@ -68,10 +70,13 @@ def train_lambdarank(
         "bagging_fraction": float(cfg.get("bagging_fraction", 0.8)),
         "bagging_freq": int(cfg.get("bagging_freq", 5)),
         "min_data_in_leaf": int(cfg.get("min_data_in_leaf", 50)),
+        "lambda_l1": float(cfg.get("lambda_l1", 0.0)),
         "lambda_l2": float(cfg.get("lambda_l2", 1.0)),
         "verbose": -1,
         "seed": int(cfg.get("seed", 42)),
     }
+    if cfg.get("max_depth") is not None:
+        params["max_depth"] = int(cfg["max_depth"])
     max_label = int(max(train_df["relevance"].max(), val_df["relevance"].max()))
     label_gain = cfg.get("label_gain")
     if label_gain is None:
@@ -104,6 +109,19 @@ def train_lambdarank(
     early_stopping_rounds = int(cfg.get("early_stopping_rounds", 50))
     if early_stopping_rounds > 0:
         callbacks.append(lgb.early_stopping(early_stopping_rounds, verbose=True))
+    max_minutes = os.environ.get("LGBM_MAX_MINUTES") or cfg.get("max_minutes")
+    if max_minutes not in (None, 0, "0"):
+        max_seconds = float(max_minutes) * 60.0
+        started = time.monotonic()
+
+        def _stop_on_time(env):
+            elapsed = time.monotonic() - started
+            if elapsed >= max_seconds:
+                print(f"Reached lgbm.max_minutes={max_minutes} after {elapsed / 60.0:.1f} min; stop gracefully.")
+                raise lgb.callback.EarlyStopException(env.iteration, env.evaluation_result_list)
+
+        _stop_on_time.order = 50
+        callbacks.append(_stop_on_time)
     return lgb.train(
         params,
         train_set,

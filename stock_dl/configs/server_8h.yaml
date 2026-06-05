@@ -11,6 +11,7 @@ val_end: auto
 universe: all
 seq_len: 20
 label_horizon: 1
+label_mode: next_open_to_next_close
 
 features:
   use_metric: true

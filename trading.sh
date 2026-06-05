@@ -4,16 +4,20 @@
 #
 # 用法:
 #   ./trading.sh                           # 交互式输入
-#   ./trading.sh a "000001.SZ:1000,600000.SH:500" 1000000  # 直接运行
+#   ./trading.sh a "000001.SZ:1000,600000.SH:500" 1000000  # 直接运行，数量为股数
+#   ./trading.sh a "000001.SZ:10,600000.SH:5" 1000000 hands  # 历史手数口径
 #
-# 持仓格式: 代码:手数,代码:手数,代码:手数
+# 持仓格式: 代码:股数,代码:股数,代码:股数
 # 示例:   "000001.SZ:1000,600000.SH:500,600519.SH:50"
 #===============================================================================
 
 set -e
 
+# 获取脚本所在目录
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
+cd "$SCRIPT_DIR"
+
+PROJECT_DIR="$SCRIPT_DIR"
 CONFIG_DIR="$PROJECT_DIR/stock_dl/configs"
 SCRIPT_FILE="$PROJECT_DIR/stock_dl/scripts/14_generate_trading_guide.py"
 
@@ -31,6 +35,7 @@ echo "=============================================="
 SCHEME="${1:-}"
 HOLDINGS="${2:-}"
 PORTFOLIO="${3:-1000000}"
+HOLDINGS_UNIT="${4:-shares}"
 
 # 如果没有参数，显示交互式菜单
 if [ -z "$SCHEME" ]; then
@@ -53,10 +58,14 @@ if [ -z "$SCHEME" ]; then
     fi
 
     echo ""
-    echo "请输入持仓 (格式: 代码:手数,代码:手数)"
-    echo "示例: 000001.SZ:1000,600000.SH:500,600519.SH:50"
+    echo "请输入持仓 (格式: 代码:股数,代码:股数；同花顺持仓页显示的数量可直接填)"
+    echo "示例: 000001.SZ:1000,600000.SH:500,600519.SH:100"
     echo "无持仓请直接回车:"
     read -r HOLDINGS
+
+    echo ""
+    read -p "持仓数量单位 shares=股数 / hands=手数 [shares]: " HOLDINGS_UNIT
+    HOLDINGS_UNIT="${HOLDINGS_UNIT:-shares}"
 
     echo ""
     read -p "请输入账户总资产 [1000000]: " PORTFOLIO
@@ -92,8 +101,9 @@ fi
 echo ""
 echo -e "${GREEN}运行参数:${NC}"
 echo "  方案: $SCHEME_NAME"
-echo "  配置: $CONFIG_FILE"
+echo "  配置: configs/$CONFIG_FILE"
 echo "  持仓: ${HOLDINGS:-无}"
+echo "  持仓单位: $HOLDINGS_UNIT"
 echo "  资产: ${PORTFOLIO} 元"
 echo ""
 
@@ -102,6 +112,7 @@ CMD="cd $PROJECT_DIR/stock_dl && python scripts/14_generate_trading_guide.py \
     --config configs/$CONFIG_FILE \
     --scheme-name \"$SCHEME_NAME\" \
     --portfolio-value $PORTFOLIO \
+    --holdings-unit $HOLDINGS_UNIT \
     --allocation score_weighted"
 
 if [ -n "$HOLDINGS" ]; then
@@ -119,7 +130,8 @@ echo "  运行完成!"
 echo -e "==============================================${NC}"
 echo ""
 echo "下一步操作:"
-echo "1. 查看生成的交易指南: cat stock_dl/outputs/trading_guide_*.txt"
+echo "1. 查看生成的交易指南:"
+echo "   cat stock_dl/outputs_scheme_a/trading_guides/$(date +%Y%m%d)/trading_guide.txt"
 echo "2. 在同花顺模拟账户中按指南下单"
 echo "3. 收盘后记录实际成交"
 echo ""

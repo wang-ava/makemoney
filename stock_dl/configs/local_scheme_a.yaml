@@ -2,12 +2,14 @@
 data_dir: ../A股数据
 output_dir: outputs_scheme_a
 start_date: "20180101"
-end_date: "20260601"
+end_date: auto
 train_end: "20241231"
 val_end: auto
 universe: all
 seq_len: 20
 label_horizon: 1
+# 重新训练时预测“次日开盘买入 -> 次日收盘”的可交易收益。
+label_mode: next_open_to_next_close
 
 features:
   use_metric: true
@@ -45,14 +47,14 @@ ensemble:
   alpha: 1.0
   alpha_grid: [1.0]
 
-# 策略: 动态持仓（2026-06-02 反思后调整）
+# 策略: 实盘防守版（A/B 共用交易规则，只让模型评分不同）
 strategy:
   initial_cash: 1000000
   cost_rate: 0.0010        # 保守计入佣金/印花税等交易成本
   slippage: 0.0015         # 小盘股和手动下单滑点
-  # 动态持仓数量：高波动少持、低波动适度多持
-  adaptive_hold: true
-  adaptive_hold_multi_indicator: true
+  # 防守版固定持仓 50 只；避免在手动交易里过度分散、过度换手
+  adaptive_hold: false
+  adaptive_hold_multi_indicator: false
   adaptive_min_hold: 24
   adaptive_max_hold: 32
   adaptive_low_vol_pct: 0.3
@@ -60,32 +62,33 @@ strategy:
   adaptive_vol_weight: 0.4
   adaptive_ic_weight: 0.3
   adaptive_conf_weight: 0.3
-  n_hold: 30
-  k_trade: 2
+  n_hold: 50
+  k_trade: 1
   k_trade_grid: [1, 2, 3, 4, 5]
   turnover_penalty: 0.005
   # 阈值触发换手：使用横截面百分位分差，避免 A/B 分数尺度不同
   score_gap_trigger: true
-  score_gap_trigger_threshold: 0.05
+  score_gap_trigger_threshold: 0.08
   # 风险过滤
   risk_filter: true
-  max_abs_pct_chg: 9.5
-  min_amount_quantile: 0.20
-  min_avg_amount_abs: 5e4     # amount单位约为千元：过滤成交额低于约5000万元
+  max_abs_pct_chg: 6.5
+  min_amount_quantile: 0.35
+  min_avg_amount_abs: 1.5e5   # amount单位约为千元：过滤成交额低于约1.5亿元
   min_list_age_years: 0.5
   max_mv_quantile: 0.95
-  min_mv_quantile: 0.05
-  max_ret_cut: 8.0
+  min_mv_quantile: 0.15
+  max_ret_cut: 5.0
+  exclude_code_prefixes: ["301", "688", "8", "003", "001"]
   momentum_filter: true
   momentum_rank_col: rank_ret_5d
-  min_momentum_rank: 0.2
+  min_momentum_rank: 0.35
   # 动态 K 换手（核心修复）
   dynamic_k: true
   dynamic_k_use_rank_scores: true
   debug_dynamic_k: false
   dynamic_k_bad_min: 1
   dynamic_k_bad_buffer: 0
-  dynamic_k_max: 6
+  dynamic_k_max: 2
   dynamic_k_step: 1
   score_gap_low: 0.02
   score_gap_high: 0.10
@@ -93,7 +96,11 @@ strategy:
   sell_outsiders: true
   sell_outsiders_mode: bad
   sell_outsiders_unlimited: false
-  sell_outsiders_max: 2
+  sell_outsiders_max: 1
+  # 实盘禁用自动重同步：真实持仓和目标池错位时只小步修正，避免一次性推倒重来
+  resync_on_mismatch: false
+  resync_min_target_overlap: 0.30
+  resync_sell_all_outsiders: false
   # 买入放大链：全部关闭（让动态 K 真正生效）
   amplify_buys: false
   hand_expand_enabled: false
@@ -105,15 +112,15 @@ strategy:
   topup_min_score_pct: 0.5
   topup_prefetch_codes: 0
   enforce_cash_limit: true
-  # 目标仓位：高波动日主动留现金
+  # 目标仓位：亏损后先保命，常态 88%，最高 92%，至少留 8% 现金
   dynamic_position: true
-  min_position_ratio: 0.70
-  base_position_ratio: 0.85
+  min_position_ratio: 0.82
+  base_position_ratio: 0.88
   max_position_ratio: 0.92
   use_long_short: false
   cash_reserve_ratio: 0.08
-  max_positions_per_industry: 5
+  max_positions_per_industry: 4
   # 价格 slack
-  sell_slack: 0.002
-  buy_slack: 0.001
+  sell_slack: 0.001
+  buy_slack: 0.0
   limit_pct: 0.10

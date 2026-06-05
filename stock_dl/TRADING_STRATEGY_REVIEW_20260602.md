@@ -118,7 +118,7 @@ target_hands_i = floor(target_value_i / price_i / 100)
 k_trade: 2
 dynamic_k: true
 dynamic_k_use_rank_scores: true
-dynamic_k_max: 6
+dynamic_k_max: 3
 dynamic_k_step: 1
 score_gap_trigger: true
 score_gap_trigger_threshold: 0.05
@@ -134,7 +134,7 @@ score_gap_high: 0.10
 4. 若烂股数大于等于 1，`k = max(k, 烂股数)`。
 5. 若最佳候选明显高于最差持仓，且百分位 gap > 0.10，`k += 1`。
 6. 若没有烂股且百分位 gap <= 0.05，`k = 0`，当天不做噪音换手。
-7. 最终 `k <= 6`。
+7. 最终 `k <= 3`，优先降低手动执行滑点和真实持仓偏离风险。
 
 ### 候选外持仓
 
@@ -148,6 +148,8 @@ sell_outsiders_max: 2
 ```
 
 只清理“候选外且分数低于候选中位数”的持仓；每天最多额外清理 2 只，并且不再绕开动态 K 大规模卖出。
+
+例外：如果真实持仓和目标池严重错位，触发 `resync_on_mismatch`，则进入重同步模式，卖出所有非目标持仓，并尽量按目标池重建组合。这个模式用于纠正“实际账户和系统假设完全相反”的情况，不受日常 `dynamic_k_max` / `sell_outsiders_max` 限制。
 
 ### 买入放大与补仓
 
@@ -199,7 +201,7 @@ enforce_cash_limit: true
 | 交易日 | 2026-06-02 |
 | 目标持仓 | 28 只 |
 | 目标仓位 | 83% |
-| 动态 K | 6 |
+| 动态 K | 6（旧指南；当前配置已收紧为最多 3） |
 | 实际买入 | 4 只 |
 | 实际卖出 | 2 只 |
 | full_positions 状态 | 4 buy、2 sell、24 skip |
@@ -219,8 +221,8 @@ enforce_cash_limit: true
 
 1. 实盘下单只看 `trading_orders.csv`，不要把 full_positions 当下单清单。
 2. `full_positions.csv` 现在可以辅助检查目标仓位，但只有 `操作=buy/sell` 且 `执行状态=本次执行` 的行才是本次动作；`skip` 行不是今天要下单。
-3. 每天生成 guide 时必须传入真实当前持仓，格式是 `股票代码:手数`。不要让 B 方案空仓重买，除非真实账户就是空仓。
-4. 若使用旧版 `*_old` 文件，注意旧 `目标手数` 很多实际是“股数”，需要除以 100 才是手数。
+3. 每天生成 guide 时必须传入真实当前持仓，格式是 `股票代码:股数`；如沿用历史手数口径，显式加 `--holdings-unit hands`。不要让 B 方案空仓重买，除非真实账户就是空仓。
+4. 若使用旧版 `*_old` 文件，注意旧 `目标手数` 很多实际是“股数”；新版文件会同时给出股数和手数，下单优先看“股数”列。
 5. 若当天已有持仓市值高于目标仓位，应优先少买或不买；现金约束已经默认开启。
 
 ## 验证情况

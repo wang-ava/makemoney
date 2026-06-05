@@ -84,6 +84,34 @@ def save_checkpoint(path: Path, model, feat_cols, cfg, target_col: str, best_met
     }, path)
 
 
+def topk_return_metrics(pred: pd.DataFrame, top_k: int = 50) -> dict[str, float]:
+    """Validation metrics aligned with the actual long-only TopK use case."""
+    rows = []
+    work = pred.dropna(subset=["score", "label"]).copy()
+    for _, g in work.groupby("trade_date"):
+        if g.empty:
+            continue
+        k = min(max(1, int(top_k)), len(g))
+        top = g.nlargest(k, "score")
+        universe_return = float(g["label"].mean())
+        top_return = float(top["label"].mean())
+        rows.append(
+            {
+                "top_return": top_return,
+                "top_excess": top_return - universe_return,
+                "top_win_rate": float((top["label"] > 0).mean()),
+            }
+        )
+    if not rows:
+        return {"val_topk_return": 0.0, "val_topk_excess": 0.0, "val_topk_win_rate": 0.0}
+    daily = pd.DataFrame(rows)
+    return {
+        "val_topk_return": float(daily["top_return"].mean()),
+        "val_topk_excess": float(daily["top_excess"].mean()),
+        "val_topk_win_rate": float(daily["top_win_rate"].mean()),
+    }
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", default=str(ROOT / "configs/default.yaml"))
@@ -103,6 +131,7 @@ def main() -> None:
         raise ValueError("No numeric feature columns found. Check panel construction and feature_columns().")
     print(f"Loaded panel: {panel.shape[0]} rows, {panel.shape[1]} columns")
     print(f"Using {len(feat_cols)} features")
+    print(f"Target: {cfg.get('label_mode', 'close_to_next_close')} / {cfg.get('label_horizon', 1)} day(s)")
 
     model, flatten = build_model(cfg["model"], n_features=len(feat_cols), seq_len=cfg["seq_len"])
     target_col = cfg["train"].get("target_col", "label_cs_z")
@@ -227,7 +256,15 @@ def main() -> None:
     scheduler = get_scheduler(opt, cfg, num_training_steps)
 
     early_metric = cfg["train"].get("early_stop_metric", "val_ic")
-    best_metric = -float("inf") if early_metric == "val_ic" else float("inf")
+    higher_is_better_metrics = {
+        "val_ic",
+        "val_icir",
+        "val_topk_return",
+        "val_topk_excess",
+        "val_topk_win_rate",
+    }
+    higher_is_better = early_metric in higher_is_better_metrics
+    best_metric = -float("inf") if higher_is_better else float("inf")
     patience = 0
     out_dir = Path(cfg["output_dir"])
     ckpt = out_dir / "model.pt"
@@ -283,6 +320,13 @@ def main() -> None:
         labels = val_pred.rename(columns={"label": "value"})[["trade_date", "ts_code", "value"]]
         ic_stats = ic_summary(daily_ic(scores, labels))
         val_ic = ic_stats["ic_mean"]
+        topk_stats = topk_return_metrics(val_pred, int(cfg["train"].get("topk_for_metric", 50)))
+        metrics_for_stop = {
+            "val_loss": va_m,
+            "val_ic": val_ic,
+            "val_icir": ic_stats["icir"],
+            **topk_stats,
+        }
         lr = float(opt.param_groups[0]["lr"])
         history.append(
             {
@@ -294,6 +338,7 @@ def main() -> None:
                 "val_loss": va_m,
                 "val_ic": val_ic,
                 "val_icir": ic_stats["icir"],
+                **topk_stats,
                 "lr": lr,
             }
         )
@@ -308,6 +353,9 @@ def main() -> None:
                 "val/loss": va_m,
                 "val/ic_mean": val_ic,
                 "val/icir": ic_stats["icir"],
+                "val/topk_return": topk_stats["val_topk_return"],
+                "val/topk_excess": topk_stats["val_topk_excess"],
+                "val/topk_win_rate": topk_stats["val_topk_win_rate"],
                 "train/lr": lr,
             },
             step=epoch + 1,
@@ -315,14 +363,20 @@ def main() -> None:
         print(
             f"epoch {epoch+1}: train={tr_m:.6f} val={va_m:.6f} "
             f"rank={np.mean(tr_rank) if tr_rank else 0:.4f} "
-            f"val_ic={val_ic:.5f} val_icir={ic_stats['icir']:.3f} lr={lr:.2e}"
+            f"val_ic={val_ic:.5f} topk_excess={topk_stats['val_topk_excess']:.5f} "
+            f"val_icir={ic_stats['icir']:.3f} lr={lr:.2e}"
         )
 
-        current = val_ic if early_metric == "val_ic" else va_m
+        if early_metric not in metrics_for_stop:
+            raise ValueError(
+                f"Unsupported train.early_stop_metric={early_metric!r}. "
+                f"Expected one of: {sorted(metrics_for_stop)}"
+            )
+        current = metrics_for_stop[early_metric]
         metric_is_finite = np.isfinite(current)
         improved = False
         if metric_is_finite:
-            improved = current > best_metric if early_metric == "val_ic" else current < best_metric
+            improved = current > best_metric if higher_is_better else current < best_metric
 
         if improved:
             best_metric = current
@@ -334,6 +388,7 @@ def main() -> None:
                     "best_epoch": epoch + 1,
                     "best_val_ic": float(val_ic),
                     "best_val_icir": float(ic_stats["icir"]),
+                    "best_val_topk_excess": float(topk_stats["val_topk_excess"]),
                 },
             )
             save_checkpoint(ckpt, model, feat_cols, cfg, target_col, best_metric, epoch + 1)
@@ -363,6 +418,8 @@ def main() -> None:
         "best_metric": best_metric,
         "early_stop_metric": early_metric,
         "target_col": target_col,
+        "label_mode": cfg.get("label_mode", "close_to_next_close"),
+        "label_horizon": cfg.get("label_horizon", 1),
         "model": cfg["model"],
         "loss": loss_name,
     }
@@ -373,6 +430,7 @@ def main() -> None:
             "final/best_metric": float(best_metric),
             "final/history_epochs": len(history),
             "final/target_col": target_col,
+            "final/label_mode": cfg.get("label_mode", "close_to_next_close"),
             "final/loss": loss_name,
         },
     )

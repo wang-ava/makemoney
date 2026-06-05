@@ -14,6 +14,8 @@ val_end: auto
 universe: all
 seq_len: 20
 label_horizon: 1
+# 信号盘后生成，真实执行在次日开盘/盘中；用可交易收益做标签。
+label_mode: next_open_to_next_close
 
 # 特征配置
 features:

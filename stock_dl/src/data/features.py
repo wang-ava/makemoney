@@ -317,6 +317,9 @@ def add_features(
     panel: pd.DataFrame,
     cross_section_rank: bool = True,
     label_horizon: int = 1,
+    label_mode: str = "close_to_next_close",
+    tradable_label_filter: bool = True,
+    label_limit_up_pct: float = 9.5,
     fill_missing: bool = True,
 ) -> pd.DataFrame:
     df = panel.copy()
@@ -724,8 +727,36 @@ def add_features(
     df = df.copy()
     by_code = df.groupby("ts_code", sort=False)
     close_g = by_code["close"]
+    open_g = by_code["open"] if "open" in df.columns else None
     horizon = max(int(label_horizon), 1)
-    df["label"] = close_g.shift(-horizon) / df["close"] - 1.0
+    future_close = close_g.shift(-horizon)
+    mode = str(label_mode or "close_to_next_close").lower()
+    if mode in {"close_to_next_close", "close_to_future_close", "close_close"}:
+        df["label"] = future_close / df["close"] - 1.0
+    elif mode in {"next_open_to_next_close", "next_open_to_future_close", "open_close"}:
+        if open_g is None:
+            raise ValueError("label_mode=next_open_to_next_close requires an open column")
+        entry_open = open_g.shift(-1)
+        df["label"] = future_close / entry_open.replace(0, np.nan) - 1.0
+        if tradable_label_filter:
+            invalid = (~np.isfinite(entry_open)) | (entry_open <= 0) | (~np.isfinite(future_close)) | (future_close <= 0)
+            if "vol" in df.columns:
+                invalid |= by_code["vol"].shift(-1).fillna(0) <= 0
+            if "amount" in df.columns:
+                invalid |= by_code["amount"].shift(-1).fillna(0) <= 0
+            open_gap = entry_open / df["close"].replace(0, np.nan) - 1.0
+            invalid |= open_gap >= float(label_limit_up_pct) / 100.0
+            df.loc[invalid, "label"] = np.nan
+    elif mode in {"close_to_next_open", "overnight_gap"}:
+        if open_g is None:
+            raise ValueError("label_mode=close_to_next_open requires an open column")
+        df["label"] = open_g.shift(-1) / df["close"].replace(0, np.nan) - 1.0
+    else:
+        raise ValueError(
+            "Unsupported label_mode="
+            f"{label_mode!r}; expected close_to_next_close, next_open_to_next_close, "
+            "or close_to_next_open"
+        )
     df["label_direction"] = (df["label"] > 0).astype(float)
     df["label_rank"] = df.groupby("trade_date")["label"].rank(pct=True) - 0.5
     df["label_cs_z"] = _cross_section_z(df, "label").clip(-5, 5)
@@ -774,6 +805,8 @@ def feature_columns(df: pd.DataFrame) -> list[str]:
     cols = []
     for c in df.columns:
         if c in exclude:
+            continue
+        if str(c).startswith("label_"):
             continue
         if df[c].dtype in [np.float64, np.float32, np.int64, np.int32]:
             cols.append(c)

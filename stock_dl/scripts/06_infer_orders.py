@@ -286,6 +286,7 @@ def main() -> None:
         panel,
         cross_section_rank=cfg["features"]["cross_section_rank"],
         label_horizon=cfg.get("label_horizon", 1),
+        label_mode=cfg.get("label_mode", "close_to_next_close"),
         fill_missing=cfg["features"].get("fill_missing", True),
     )
     feat_cols = ckpt.get("feat_cols") or feature_columns(panel)
@@ -312,14 +313,15 @@ def main() -> None:
     holdings = [x.strip() for x in args.holdings.split(",") if x.strip()]
     vol_pct = latest_market_vol_percentile(panel, cfg["strategy"])
 
-    # 动态计算持仓数量（根据市场波动率）
+    # 动态计算持仓数量（根据市场波动率）。若策略已锁定固定 n_hold，则尊重配置。
     strategy_cfg = cfg["strategy"]
-    min_hold = strategy_cfg.get("adaptive_min_hold", 20)
-    max_hold = strategy_cfg.get("adaptive_max_hold", 60)
-    low_vol_pct = strategy_cfg.get("adaptive_low_vol_pct", 0.3)
-    high_vol_pct = strategy_cfg.get("adaptive_high_vol_pct", 0.7)
-
-    if vol_pct is not None:
+    if not strategy_cfg.get("adaptive_hold", False):
+        n_hold = int(strategy_cfg.get("n_hold", 50))
+    elif vol_pct is not None:
+        min_hold = strategy_cfg.get("adaptive_min_hold", 20)
+        max_hold = strategy_cfg.get("adaptive_max_hold", 60)
+        low_vol_pct = strategy_cfg.get("adaptive_low_vol_pct", 0.3)
+        high_vol_pct = strategy_cfg.get("adaptive_high_vol_pct", 0.7)
         if vol_pct <= low_vol_pct:  # 市场波动低 → 多持
             n_hold = max_hold
         elif vol_pct >= high_vol_pct:  # 市场波动高 → 少持
@@ -330,9 +332,12 @@ def main() -> None:
     else:
         n_hold = int(strategy_cfg.get("n_hold", 50))  # 默认50只
 
-    # 动态计算k_trade（换手数量）
+    # 动态计算k_trade（换手数量）。dynamic_k 策略使用配置里的 base_k，再由 make_orders 内部决定。
     k_base = int(strategy_cfg.get("k_trade", 2))
-    k_trade = max(1, min(n_hold // 10, k_base + 1))
+    if strategy_cfg.get("dynamic_k", False):
+        k_trade = k_base
+    else:
+        k_trade = max(1, min(n_hold // 10, k_base + 1))
 
     print(f"[Dynamic Position] vol_percentile={vol_pct:.3f}, n_hold={n_hold}, k_trade={k_trade}")
 

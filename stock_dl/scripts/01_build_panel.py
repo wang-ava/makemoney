@@ -35,6 +35,9 @@ def main() -> None:
         panel,
         cross_section_rank=cfg["features"]["cross_section_rank"],
         label_horizon=cfg.get("label_horizon", 1),
+        label_mode=cfg.get("label_mode", "close_to_next_close"),
+        tradable_label_filter=cfg.get("tradable_label_filter", True),
+        label_limit_up_pct=cfg.get("label_limit_up_pct", 9.5),
         fill_missing=cfg["features"].get("fill_missing", True),
     )
 

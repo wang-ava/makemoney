@@ -40,6 +40,57 @@ from src.models.factory import build_model_from_checkpoint
 
 
 # ============================================================================
+# 历史回测最优交易策略（A/B 共用，模型分数仍各用各的）
+# ============================================================================
+
+OPTIMAL_STRATEGY_PROFILE = "live_defensive_capital_protection_20260603"
+OPTIMAL_STRATEGY_OVERRIDES = {
+    # Live defensive profile: protect capital first.  The historical n=70/98%
+    # profile performed well in backtests but was too aggressive for manual
+    # trading after a position-resync mismatch.
+    "adaptive_hold": False,
+    "adaptive_hold_multi_indicator": False,
+    "n_hold": 50,
+    "k_trade": 1,
+    "dynamic_k": True,
+    "dynamic_k_max": 2,
+    "score_gap_trigger": True,
+    "score_gap_trigger_threshold": 0.08,
+    "min_amount_quantile": 0.35,
+    "min_avg_amount_abs": 1.5e5,
+    "min_mv_quantile": 0.15,
+    "max_abs_pct_chg": 6.5,
+    "max_ret_cut": 5.0,
+    "min_momentum_rank": 0.35,
+    "sell_outsiders": True,
+    "sell_outsiders_mode": "bad",
+    "sell_outsiders_unlimited": False,
+    "sell_outsiders_max": 1,
+    "resync_on_mismatch": False,
+    "resync_sell_all_outsiders": False,
+    "amplify_buys": False,
+    "hand_expand_enabled": False,
+    "topup_enabled": False,
+    "enforce_cash_limit": True,
+    "dynamic_position": True,
+    "min_position_ratio": 0.82,
+    "base_position_ratio": 0.88,
+    "max_position_ratio": 0.92,
+    "cash_reserve_ratio": 0.08,
+    "max_positions_per_industry": 4,
+    "sell_slack": 0.001,
+    "buy_slack": 0.0,
+}
+
+
+def apply_optimal_strategy(strategy_cfg: dict) -> dict:
+    """Apply the locked daily trading policy while preserving risk filters."""
+    out = strategy_cfg.copy()
+    out.update(OPTIMAL_STRATEGY_OVERRIDES)
+    return out
+
+
+# ============================================================================
 # engine.py 中的核心函数（保持一致）
 # ============================================================================
 
@@ -66,9 +117,9 @@ def _choose_adaptive_n(base_n: int, vol_pct: float | None, strategy_cfg: dict) -
     low = float(strategy_cfg.get("adaptive_low_vol_pct", 0.3))
     high = float(strategy_cfg.get("adaptive_high_vol_pct", 0.7))
     if vol_pct >= high:
-        return max_n
-    if vol_pct <= low:
         return min_n
+    if vol_pct <= low:
+        return max_n
     return int(base_n)
 
 
@@ -122,6 +173,14 @@ def _filter_momentum(day: pd.DataFrame, buy_scores: pd.Series, strategy_cfg: dic
     keep = day[day[col].fillna(0.5) >= threshold].set_index("ts_code")
     filtered = buy_scores[buy_scores.index.isin(keep.index)]
     return filtered if not filtered.empty else buy_scores
+
+
+def _filter_excluded_codes(df: pd.DataFrame, strategy_cfg: dict) -> pd.DataFrame:
+    prefixes = tuple(str(p) for p in strategy_cfg.get("exclude_code_prefixes", []) if str(p))
+    if not prefixes or "ts_code" not in df.columns:
+        return df
+    raw_code = df["ts_code"].astype(str).str.split(".", regex=False).str[0]
+    return df[~raw_code.str.startswith(prefixes)].copy()
 
 
 def _choose_dynamic_k(day_scores: pd.Series, buy_scores: pd.Series, holdings: dict, base_k: int, strategy_cfg: dict) -> int:
@@ -289,23 +348,35 @@ class TargetStock:
 # 持仓解析
 # ============================================================================
 
-def parse_holdings(holdings_str: str) -> list[HoldingStock]:
+def parse_holdings(holdings_str: str, unit: str = "shares") -> list[HoldingStock]:
     """解析持仓字符串
 
-    输入格式: 代码:手数,代码:手数  （1手=100股）
-    内部存储: HoldingStock.shares 统一为"股数"（× 100 转换）
+    输入格式: 代码:股数,代码:股数。同花顺持仓/委托数量通常显示为股数。
+    内部存储: HoldingStock.shares 统一为"股数"。
+    若历史命令使用手数，可传 --holdings-unit hands。
     这样与 target_shares（= 100的整数倍 = 股数）保持单位一致
     """
     holdings = []
     if not holdings_str.strip():
         return holdings
+    unit = unit.lower()
+    if unit not in {"shares", "hands"}:
+        raise ValueError("--holdings-unit must be 'shares' or 'hands'")
     for item in holdings_str.split(","):
         item = item.strip()
         if not item or ":" not in item:
             continue
         code, shares_str = item.split(":")
-        # 用户输入"手数" → 内部统一存"股数"
-        shares = int(shares_str) * 100
+        qty = int(float(shares_str))
+        shares = qty * 100 if unit == "hands" else qty
+        if shares <= 0:
+            continue
+        if shares % 100 != 0:
+            rounded = shares // 100 * 100
+            print(f"⚠ {code.strip()} 持仓数量 {shares} 不是100股整数倍，按 {rounded} 股处理")
+            shares = rounded
+        if shares <= 0:
+            continue
         holdings.append(HoldingStock(ts_code=code.strip(), shares=shares))
     return holdings
 
@@ -559,11 +630,8 @@ def generate_trading_guide(
     else:
         buyable = scores.copy()
 
-    # 过滤股票类型：排除 301(创业板)、688(科创板)、8开头(北交所)、003/001(主板需权限)
-    import re
-    exclude_pattern = re.compile(r'^(301|688|8|003|001)\d{3,}')
-    buyable = buyable[~buyable['ts_code'].str.replace('.SZ|.SH', '', regex=False).str.match(exclude_pattern)]
-    print(f"✓ 排除创业板/科创板/北交所股票后: {len(buyable)}只")
+    buyable = _filter_excluded_codes(buyable, strategy_cfg)
+    print(f"✓ 排除权限/市场限制股票后: {len(buyable)}只")
 
     # Momentum 过滤（与 engine.py 一致）
     day = scores[scores["trade_date"] == last_date].copy()
@@ -573,11 +641,9 @@ def generate_trading_guide(
     else:
         buyable = scores[scores["ts_code"].isin(buyable.index)].copy()
 
-    # 再次过滤股票类型：保持与第一次过滤完全一致（避免 003/001 主板权限股在 momentum 过滤后回流）
-    import re
-    exclude_pattern = re.compile(r'^(301|688|8|003|001)\d{3,}')
-    buyable = buyable[~buyable['ts_code'].str.replace('.SZ|.SH', '', regex=False).str.match(exclude_pattern)]
-    print(f"✓ 排除创业板/科创板/北交所股票后: {len(buyable)}只")
+    # 再次过滤股票类型：保持与第一次过滤完全一致，避免 momentum 过滤后回流。
+    buyable = _filter_excluded_codes(buyable, strategy_cfg)
+    print(f"✓ 排除权限/市场限制股票后: {len(buyable)}只")
 
     buyable = buyable.sort_values("score", ascending=False)
 
@@ -681,7 +747,21 @@ def generate_trading_guide(
     to_buy.sort(key=lambda x: -x.weight)
     to_sell.sort(key=lambda x: x.weight)
 
-    # === 候选外持仓清理（不受 dynamic_k 限制）===
+    held_codes_all = [h.ts_code for h in current_holdings]
+    target_set = set(target_codes)
+    if held_codes_all:
+        target_overlap_count = sum(1 for c in held_codes_all if c in target_set)
+        target_overlap_ratio = target_overlap_count / len(held_codes_all)
+    else:
+        target_overlap_count = 0
+        target_overlap_ratio = 1.0
+    resync_triggered = bool(
+        strategy_cfg.get("resync_on_mismatch", False)
+        and current_holdings
+        and target_overlap_ratio < float(strategy_cfg.get("resync_min_target_overlap", 0.30))
+    )
+
+    # === 候选外持仓清理 ===
     # 模式（由 sell_outsiders_mode 控制）：
     #   "all"  (默认，激进): 卖所有 不在 top n_hold 候选 的持仓（不论分数）
     #   "bad"  (保守):      只卖 持仓分 < 候选中位 且 不在 top n_hold 候选 的股
@@ -689,17 +769,20 @@ def generate_trading_guide(
     # 数据依据（方案 A）：IC=0.105, ICIR=0.945，模型预测力强 → 激进换到 top 41 收益高
     outsider_sells: list[TargetStock] = []
     sell_mode = strategy_cfg.get("sell_outsiders_mode", "all")
-    if strategy_cfg.get("sell_outsiders", False) and current_holdings and sell_mode in ("all", "bad"):
-        held_codes_all = [h.ts_code for h in current_holdings]
+    effective_sell_mode = (
+        "all"
+        if resync_triggered and strategy_cfg.get("resync_sell_all_outsiders", True)
+        else sell_mode
+    )
+    if (strategy_cfg.get("sell_outsiders", False) or resync_triggered) and current_holdings and effective_sell_mode in ("all", "bad"):
         _ds = buyable.set_index("ts_code")["score"]
-        _target_set = set(target_codes)
         _candidates_only = _ds.drop(index=[c for c in held_codes_all if c in _ds.index], errors="ignore")
         _cand_median = float(_candidates_only.median()) if not _candidates_only.empty else 0.0
 
         # 候选外的所有持仓（不在 top n_hold 候选）
-        _outsider_codes = set(held_codes_all) - _target_set
+        _outsider_codes = set(held_codes_all) - target_set
         # "bad" 模式：进一步筛 持仓分<候选中位
-        if sell_mode == "bad":
+        if effective_sell_mode == "bad":
             _bad_codes = set(_ds[_ds < _cand_median].index)
             _outsider_codes = _outsider_codes & _bad_codes
 
@@ -713,7 +796,10 @@ def generate_trading_guide(
             _sell_px = prices.get(code, {}).get("sell_price", 0)
             held_score = float(_ds.get(code, 0.0))
             is_bad = bool(np.isfinite(_cand_median) and held_score < _cand_median)
-            _risk = "🔄 烂股清理" if is_bad else "🔄 候选外清理"
+            if resync_triggered:
+                _risk = "🔁 持仓重同步"
+            else:
+                _risk = "🔄 烂股清理" if is_bad else "🔄 候选外清理"
             if _liq < 0.3:
                 _risk += " ⚠️流动性差"
             outsider_sells.append(TargetStock(
@@ -734,7 +820,7 @@ def generate_trading_guide(
         # 按当前持仓市值升序（小单优先卖，快回笼资金）
         outsider_sells.sort(key=lambda t: t.current_shares * t.sell_price)
         if strategy_cfg.get("debug_dynamic_k", False):
-            mode_label = "全部候选外" if sell_mode == "all" else "烂股(score<候选中位)"
+            mode_label = "全部候选外" if effective_sell_mode == "all" else "烂股(score<候选中位)"
             print(f"  [debug] 候选外清理: {len(outsider_sells)} 只 (模式={mode_label}, 候选中位={_cand_median:.3f})")
 
     # 动态 k_trade（与 engine.py 一致）
@@ -746,6 +832,9 @@ def generate_trading_guide(
     is_empty_portfolio = (len(current_holdings) == 0)
     if is_empty_portfolio:
         actual_k = len(to_buy)  # 一次性买完所有目标股票
+    elif resync_triggered:
+        # 真实持仓和目标池严重错位时，不能再受日常 dynamic_k 限制。
+        actual_k = max(len(to_buy), len(to_sell), len(outsider_sells))
     else:
         # 调试：打印 dynamic_k 决策依据
         if strategy_cfg.get("debug_dynamic_k", False):
@@ -766,9 +855,9 @@ def generate_trading_guide(
         if strategy_cfg.get("debug_dynamic_k", False):
             print(f"  [debug] 决策 k = {actual_k} (base_k={k_trade})")
 
-    actual_buy = to_buy[:actual_k]
-    rebalance_sells = to_sell[:actual_k]
-    if strategy_cfg.get("sell_outsiders_unlimited", False):
+    actual_buy = to_buy if resync_triggered else to_buy[:actual_k]
+    rebalance_sells = to_sell if resync_triggered else to_sell[:actual_k]
+    if resync_triggered or strategy_cfg.get("sell_outsiders_unlimited", False):
         limited_outsider_sells = outsider_sells
     else:
         remaining_sell_capacity = max(0, actual_k - len(rebalance_sells))
@@ -779,7 +868,7 @@ def generate_trading_guide(
     actual_sell = rebalance_sells + limited_outsider_sells
 
     # 汇总卖/买金额（用于"先卖后买"资金时序）
-    # 注：shares 字段语义统一为"股数"（parse_holdings 已 × 100）
+    # 注：shares 字段语义统一为"股数"（输入为手数时才会 × 100）
     sell_total_value = sum(t.action_shares * t.sell_price for t in actual_sell)
     buy_total_value = sum(t.action_shares * t.buy_price for t in actual_buy)
     sell_total_shares = sum(t.action_shares for t in actual_sell)  # 股
@@ -1003,7 +1092,9 @@ def generate_trading_guide(
   账户总额: {portfolio_value:,.0f} 元
   可用资金: {available_value:,.0f} 元
   动态换手: {actual_k} 只 (基准: {k_trade}){'  | 贪心放大: +' + str(len([t for t in actual_buy if t.risk_flag == '']) - actual_k) + ' 只' if len([t for t in actual_buy if t.risk_flag == '']) > actual_k else ''}{'  | 补仓: +' + str(len([t for t in actual_buy if t.risk_flag == '🆕 补仓（非 top-41 候选）'])) + ' 只' if any(t.risk_flag == '🆕 补仓（非 top-41 候选）' for t in actual_buy) else ''}
+  持仓重同步: {'是' if resync_triggered else '否'} (目标重合度: {target_overlap_ratio:.0%})
   分配策略: {allocation_strategy}
+  下单数量单位: 股数（手数仅作参考，1手=100股）
   卖出折让: -{sell_slack*100:.2f}% | 买入溢价: +{buy_slack*100:.2f}% (确保同花顺快速成交)
 
 ================================================================================
@@ -1030,15 +1121,14 @@ def generate_trading_guide(
     if not actual_sell:
         guide += "  ✓ 无需卖出\n\n"
     else:
-        guide += f"  {'优先级':<4} {'股票代码':<12} {'卖出手数':<8} {'收盘价':<8} {'推荐挂单价':<11} {'折让':<7} {'风险提示':<15}\n"
+        guide += f"  {'优先级':<4} {'股票代码':<12} {'卖出股数':<8} {'手数':<6} {'收盘价':<8} {'推荐挂单价':<11} {'折让':<7} {'风险提示':<15}\n"
         guide += "  " + "-" * 80 + "\n"
         for i, t in enumerate(actual_sell, 1):
             prev_close = prices.get(t.ts_code, {}).get("prev_close", 0)
             slack_pct = prices.get(t.ts_code, {}).get("sell_slack_pct", 0.002)
             slack_label = f"-{slack_pct*100:.2f}%"
-            # shares 内部存股数，输出给同花顺"手数" = 股数 // 100
             hands = t.action_shares // 100
-            guide += f"  {i:<4} {t.ts_code:<12} {hands:<8} {prev_close:<8.2f} {t.sell_price:<11.2f} {slack_label:<7} {t.risk_flag:<15}\n"
+            guide += f"  {i:<4} {t.ts_code:<12} {t.action_shares:<8} {hands:<6} {prev_close:<8.2f} {t.sell_price:<11.2f} {slack_label:<7} {t.risk_flag:<15}\n"
 
     guide += f"""
 ================================================================================
@@ -1049,7 +1139,7 @@ def generate_trading_guide(
     if not actual_buy:
         guide += "  ✓ 无需买入\n\n"
     else:
-        guide += f"  {'优先级':<4} {'股票代码':<12} {'买入手数':<8} {'收盘价':<8} {'推荐挂单价':<11} {'溢价':<7} {'预估金额':<12} {'风险提示':<15}\n"
+        guide += f"  {'优先级':<4} {'股票代码':<12} {'买入股数':<8} {'手数':<6} {'收盘价':<8} {'推荐挂单价':<11} {'溢价':<7} {'预估金额':<12} {'风险提示':<15}\n"
         guide += "  " + "-" * 100 + "\n"
         for i, t in enumerate(actual_buy, 1):
             est_amount = t.action_shares * t.buy_price  # 股数 × 元/股 = 元
@@ -1057,7 +1147,7 @@ def generate_trading_guide(
             slack_pct = prices.get(t.ts_code, {}).get("buy_slack_pct", 0.001)
             slack_label = f"+{slack_pct*100:.2f}%"
             hands = t.action_shares // 100
-            guide += f"  {i:<4} {t.ts_code:<12} {hands:<8} {prev_close:<8.2f} {t.buy_price:<11.2f} {slack_label:<7} {est_amount:<12,.0f} {t.risk_flag:<15}\n"
+            guide += f"  {i:<4} {t.ts_code:<12} {t.action_shares:<8} {hands:<6} {prev_close:<8.2f} {t.buy_price:<11.2f} {slack_label:<7} {est_amount:<12,.0f} {t.risk_flag:<15}\n"
 
     # 备选股票池（包含完整价格）
     all_backup_prices = {}
@@ -1105,14 +1195,11 @@ def generate_trading_guide(
 ================================================================================
 说明：如果目标股票无法买入（涨停/无法交易），按下方表格替换
 
-  {'原股票':<12} {'原价':<8} {'原手数':<8} │ {'备选股票':<12} {'备选价':<8} {'备选手数':<8}
+  {'原股票':<12} {'原价':<8} {'原股数':<8} │ {'备选股票':<12} {'备选价':<8} {'备选股数':<8}
   """ + "-" * 60 + "\n"
 
     for orig_code, info in backup_map.items():
-        # shares 字段是股数，输出给同花顺"手数" = // 100
-        orig_hands = info['original_shares'] // 100
-        backup_hands = info['backup_shares'] // 100
-        guide += f"  {info['original_code']:<12} {info['original_price']:<8.2f} {orig_hands:<8} │ {info['backup_code']:<12} {info['backup_price']:<8.2f} {backup_hands:<8}\n"
+        guide += f"  {info['original_code']:<12} {info['original_price']:<8.2f} {info['original_shares']:<8} │ {info['backup_code']:<12} {info['backup_price']:<8.2f} {info['backup_shares']:<8}\n"
 
     # 备选股票池
     guide += f"""
@@ -1120,15 +1207,15 @@ def generate_trading_guide(
                          【备选股票池完整信息】
 ================================================================================
 
-  {'序号':<4} {'股票代码':<12} {'分数':<10} {'建议买入价':<10} {'可买手数':<10} {'流动性':<8}
+  {'序号':<4} {'股票代码':<12} {'分数':<10} {'建议买入价':<10} {'可买股数':<10} {'流动性':<8}
   """ + "-" * 60 + "\n"
 
     for i, b in enumerate(backups[:20], 1):
         backup_code = b['ts_code']
         backup_price = all_backup_prices.get(backup_code, {}).get('buy_price', 0)
-        # 计算可买手数
+        # 计算可买股数
         if backup_price > 0:
-            available_for_backup = int(portfolio_value * 0.02 / backup_price // 100 * 100) // 100  # 预留2%资金给每个备选，输出"手数"
+            available_for_backup = int(portfolio_value * 0.02 / backup_price // 100 * 100)  # 预留2%资金给每个备选，输出股数
         else:
             available_for_backup = 0
         guide += f"  {i:<4} {backup_code:<12} {b['score']:<10.4f} {backup_price:<10.2f} {available_for_backup:<10} {b['liquidity']:<8}\n"
@@ -1139,27 +1226,25 @@ def generate_trading_guide(
                          【同花顺操作格式】
 ================================================================================
 【卖出操作】（先执行）
-  证券代码            卖出价格        卖出数量
+  证券代码            卖出价格        卖出数量(股)
 """
 
     if not actual_sell:
         guide += "  (无需卖出)\n"
     else:
         for t in actual_sell:
-            hands = t.action_shares // 100
-            guide += f"  {t.ts_code:<16} {t.sell_price:<14.2f} {hands:>10}\n"
+            guide += f"  {t.ts_code:<16} {t.sell_price:<14.2f} {t.action_shares:>10}\n"
 
     guide += """
 【买入操作】（后执行）
-  证券代码            买入价格        买入数量
+  证券代码            买入价格        买入数量(股)
 """
 
     if not actual_buy:
         guide += "  (无需买入)\n"
     else:
         for t in actual_buy:
-            hands = t.action_shares // 100
-            guide += f"  {t.ts_code:<16} {t.buy_price:<14.2f} {hands:>10}\n"
+            guide += f"  {t.ts_code:<16} {t.buy_price:<14.2f} {t.action_shares:>10}\n"
 
     actual_buy_by_code = {t.ts_code: t for t in actual_buy}
     actual_sell_by_code = {t.ts_code: t for t in actual_sell}
@@ -1171,7 +1256,7 @@ def generate_trading_guide(
 ================================================================================
   说明：本表是目标仓位总览；真正下单以【卖出清单/买入清单】和 CSV 中“本次执行”列为准。
 
-  {'执行':<8} {'股票代码':<12} {'权重':<10} {'目标手数':<8} {'当前手数':<8} {'本次买卖':<8} {'目标动作':<8}
+  {'执行':<8} {'股票代码':<12} {'权重':<10} {'目标股数':<8} {'当前股数':<8} {'本次股数':<8} {'目标动作':<8}
 """
 
     guide += "  " + "-" * 85 + "\n"
@@ -1179,21 +1264,18 @@ def generate_trading_guide(
     for t in targets:
         if t.ts_code in actual_buy_by_code:
             exec_action = "buy"
-            exec_need = f"+{actual_buy_by_code[t.ts_code].action_shares // 100}"
+            exec_need = f"+{actual_buy_by_code[t.ts_code].action_shares}"
         elif t.ts_code in actual_sell_by_code:
             exec_action = "sell"
-            exec_need = f"-{actual_sell_by_code[t.ts_code].action_shares // 100}"
+            exec_need = f"-{actual_sell_by_code[t.ts_code].action_shares}"
         else:
             exec_action = "skip" if t.action in ("buy", "sell") else "hold"
             exec_need = "0"
-        # shares 字段是股数，输出给同花顺"手数" = // 100
-        tgt_hands = t.target_shares // 100
-        cur_hands = t.current_shares // 100
-        guide += f"  {exec_action:<8} {t.ts_code:<12} {t.weight:<10.2%} {tgt_hands:<8} {cur_hands:<8} {exec_need:<8} {t.action:<8}\n"
+        guide += f"  {exec_action:<8} {t.ts_code:<12} {t.weight:<10.2%} {t.target_shares:<8} {t.current_shares:<8} {exec_need:<8} {t.action:<8}\n"
 
     outsider_rows_for_full = [t for t in actual_sell if t.ts_code not in {x.ts_code for x in targets}]
     for t in outsider_rows_for_full:
-        guide += f"  {'sell':<8} {t.ts_code:<12} {'0.00%':<10} {0:<8} {t.current_shares // 100:<8} {'-' + str(t.action_shares // 100):<8} {'outsider':<8}\n"
+        guide += f"  {'sell':<8} {t.ts_code:<12} {'0.00%':<10} {0:<8} {t.current_shares:<8} {'-' + str(t.action_shares):<8} {'outsider':<8}\n"
 
     guide += f"""
 ================================================================================
@@ -1216,13 +1298,15 @@ def generate_trading_guide(
     with open(guide_path, "w", encoding="utf-8") as f:
         f.write(guide)
 
-    # 保存CSV（shares 内部存股数，输出给同花顺"手数" = // 100）
+    # 保存CSV：股数用于同花顺下单，手数仅作参考。
     orders = []
     for t in actual_sell:
         orders.append({
             "操作": "卖出",
             "股票代码": t.ts_code,
+            "卖出股数": t.action_shares,
             "卖出手数": t.action_shares // 100,
+            "当前股数": t.current_shares,
             "当前手数": t.current_shares // 100,
             "建议卖出价": t.sell_price,
             "预估金额": t.action_shares * t.sell_price,
@@ -1232,7 +1316,9 @@ def generate_trading_guide(
         orders.append({
             "操作": "买入",
             "股票代码": t.ts_code,
+            "买入股数": t.action_shares,
             "买入手数": t.action_shares // 100,
+            "目标股数": t.target_shares,
             "目标手数": t.target_shares // 100,
             "建议买入价": t.buy_price,
             "预估金额": t.action_shares * t.buy_price,
@@ -1268,12 +1354,16 @@ def generate_trading_guide(
             "股票代码": t.ts_code,
             "分数": t.score,
             "权重": f"{t.weight:.2%}",
+            "目标股数": t.target_shares,
             "目标手数": t.target_shares // 100,
+            "当前股数": t.current_shares,
             "当前手数": t.current_shares // 100,
             "操作": exec_action,
+            "需买卖股数": exec_delta_hands * 100,
             "需买卖手数": exec_delta_hands,
             "执行状态": execution_status,
             "目标操作": target_action,
+            "目标需买卖股数": target_delta_hands * 100,
             "目标需买卖手数": target_delta_hands,
             "建议买入价": t.buy_price,
             "建议卖出价": t.sell_price,
@@ -1286,12 +1376,16 @@ def generate_trading_guide(
             "股票代码": t.ts_code,
             "分数": t.score,
             "权重": "0.00%",
+            "目标股数": 0,
             "目标手数": 0,
+            "当前股数": t.current_shares,
             "当前手数": t.current_shares // 100,
             "操作": "sell",
+            "需买卖股数": t.action_shares,
             "需买卖手数": t.action_shares // 100,
             "执行状态": "本次执行",
             "目标操作": "outsider_sell",
+            "目标需买卖股数": t.action_shares,
             "目标需买卖手数": t.action_shares // 100,
             "建议买入价": t.buy_price,
             "建议卖出价": t.sell_price,
@@ -1307,6 +1401,8 @@ def generate_trading_guide(
         "data_date": last_date,
         "trading_date": trading_date,
         "scheme": scheme_name,
+        "strategy_profile": strategy_cfg.get("strategy_profile", "config"),
+        "strategy_overrides": strategy_cfg.get("strategy_overrides", {}),
         "portfolio_value": portfolio_value,
         "target_position": target_position,
         "n_hold": len(targets),
@@ -1318,6 +1414,9 @@ def generate_trading_guide(
         "n_outsider_sell_executed": len(limited_outsider_sells),
         "dynamic_k": actual_k,
         "base_k": k_trade,
+        "resync_triggered": resync_triggered,
+        "target_overlap_ratio": target_overlap_ratio,
+        "target_overlap_count": target_overlap_count,
         "vol_pct": vol_pct,
         "position_confidence": position_confidence,
         "allocation_strategy": allocation_strategy,
@@ -1335,7 +1434,13 @@ def generate_trading_guide(
 def main():
     parser = argparse.ArgumentParser(description="同花顺手动下单交易指南生成器")
     parser.add_argument("--config", default=str(ROOT / "configs/default.yaml"))
-    parser.add_argument("--holdings", default="", help="格式: 代码:手数,代码:手数")
+    parser.add_argument("--holdings", default="", help="格式: 代码:股数,代码:股数")
+    parser.add_argument(
+        "--holdings-unit",
+        choices=["shares", "hands"],
+        default="shares",
+        help="持仓数量单位：shares=股数（默认，同花顺显示口径），hands=手数（历史命令兼容）",
+    )
     parser.add_argument("--portfolio-value", type=float, default=1000000)
     parser.add_argument("--scheme-name", default="方案A(纯DL)")
     parser.add_argument("--allocation", default="score_weighted",
@@ -1343,6 +1448,9 @@ def main():
     args = parser.parse_args()
 
     cfg = load_config(args.config)
+    cfg["strategy"] = apply_optimal_strategy(cfg["strategy"])
+    cfg["strategy"]["strategy_profile"] = OPTIMAL_STRATEGY_PROFILE
+    cfg["strategy"]["strategy_overrides"] = OPTIMAL_STRATEGY_OVERRIDES
     output_dir = Path(cfg["output_dir"])
     output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -1385,6 +1493,7 @@ def main():
         panel,
         cross_section_rank=cfg["features"]["cross_section_rank"],
         label_horizon=cfg.get("label_horizon", 1),
+        label_mode=cfg.get("label_mode", "close_to_next_close"),
         fill_missing=cfg["features"].get("fill_missing", True),
     )
 
@@ -1435,11 +1544,19 @@ def main():
     print(f"✓ 预测完成: {len(scores)} 只股票")
 
     # 解析持仓
-    holdings = parse_holdings(args.holdings)
-    print(f"✓ 当前持仓: {len(holdings)} 只股票")
+    holdings = parse_holdings(args.holdings, args.holdings_unit)
+    print(f"✓ 当前持仓: {len(holdings)} 只股票 (输入单位: {'股数' if args.holdings_unit == 'shares' else '手数'})")
 
-    # 策略参数
+    # 策略参数：A/B 每日输出都统一使用历史回测锁定的最优交易规则。
     strategy_cfg = cfg["strategy"]
+    print(f"✓ 使用最优交易策略: {OPTIMAL_STRATEGY_PROFILE}")
+    print(
+        f"  n_hold={strategy_cfg['n_hold']}, k_trade={strategy_cfg['k_trade']}, "
+        f"dynamic_k_max={strategy_cfg['dynamic_k_max']}, "
+        f"仓位={strategy_cfg['min_position_ratio']:.0%}/"
+        f"{strategy_cfg['base_position_ratio']:.0%}/"
+        f"{strategy_cfg['max_position_ratio']:.0%}"
+    )
     base_n_hold = strategy_cfg.get("n_hold", 30)
     k_trade = strategy_cfg.get("k_trade", 1)
     cash_reserve_ratio = float(strategy_cfg.get("cash_reserve_ratio", 0.0))
