@@ -35,6 +35,7 @@ sys.path.insert(0, str(ROOT))
 
 from src.config import load_config
 from src.data.features import add_features, feature_columns
+from src.data.labels import validate_checkpoint_label_config, validate_panel_labels
 from src.data.panel import build_panel
 from src.models.factory import build_model_from_checkpoint
 
@@ -1472,6 +1473,11 @@ def main():
         sys.exit(1)
 
     ckpt = torch.load(ckpt_path, map_location=device, weights_only=True)
+    validate_checkpoint_label_config(
+        ckpt,
+        label_mode=cfg.get("label_mode", "close_to_next_close"),
+        label_horizon=cfg.get("label_horizon", 1),
+    )
     print(f"✓ 模型加载成功")
 
     # 构建面板
@@ -1494,7 +1500,16 @@ def main():
         cross_section_rank=cfg["features"]["cross_section_rank"],
         label_horizon=cfg.get("label_horizon", 1),
         label_mode=cfg.get("label_mode", "close_to_next_close"),
+        tradable_label_filter=cfg.get("tradable_label_filter", True),
+        label_limit_up_pct=cfg.get("label_limit_up_pct", 9.5),
         fill_missing=cfg["features"].get("fill_missing", True),
+    )
+    validate_panel_labels(
+        panel,
+        label_mode=cfg.get("label_mode", "close_to_next_close"),
+        label_horizon=cfg.get("label_horizon", 1),
+        tradable_label_filter=cfg.get("tradable_label_filter", True),
+        label_limit_up_pct=cfg.get("label_limit_up_pct", 9.5),
     )
 
     feat_cols = ckpt.get("feat_cols") or feature_columns(panel)

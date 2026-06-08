@@ -22,6 +22,7 @@ from src.backtest.engine import choose_target_position
 from src.backtest.risk import attach_buyable_flag
 from src.backtest.strategy import load_best_strategy
 from src.data.features import add_features, feature_columns
+from src.data.labels import validate_checkpoint_label_config, validate_panel_labels
 from src.data.panel import build_panel
 from src.models.factory import build_model_from_checkpoint
 
@@ -266,6 +267,11 @@ def main() -> None:
     print(f"Using output_dir: {out}")
     print(f"Using latest end_date: {cfg['end_date']}")
     ckpt = torch.load(out / "model.pt", map_location="cpu", weights_only=True)
+    validate_checkpoint_label_config(
+        ckpt,
+        label_mode=cfg.get("label_mode", "close_to_next_close"),
+        label_horizon=cfg.get("label_horizon", 1),
+    )
 
     from datetime import datetime, timedelta
 
@@ -287,7 +293,16 @@ def main() -> None:
         cross_section_rank=cfg["features"]["cross_section_rank"],
         label_horizon=cfg.get("label_horizon", 1),
         label_mode=cfg.get("label_mode", "close_to_next_close"),
+        tradable_label_filter=cfg.get("tradable_label_filter", True),
+        label_limit_up_pct=cfg.get("label_limit_up_pct", 9.5),
         fill_missing=cfg["features"].get("fill_missing", True),
+    )
+    validate_panel_labels(
+        panel,
+        label_mode=cfg.get("label_mode", "close_to_next_close"),
+        label_horizon=cfg.get("label_horizon", 1),
+        tradable_label_filter=cfg.get("tradable_label_filter", True),
+        label_limit_up_pct=cfg.get("label_limit_up_pct", 9.5),
     )
     feat_cols = ckpt.get("feat_cols") or feature_columns(panel)
     missing_features = [c for c in feat_cols if c not in panel.columns]

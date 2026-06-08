@@ -20,6 +20,7 @@ sys.path.insert(0, str(ROOT))
 from src.config import load_config
 from src.data.dataset import DateBatchSampler, StockWindowDataset, load_panel
 from src.data.features import feature_columns
+from src.data.labels import validate_panel_labels
 from src.metrics.ic import daily_ic, ic_summary
 from src.models.factory import build_model
 from src.models.losses import composite_signal_loss, ic_loss
@@ -79,6 +80,8 @@ def save_checkpoint(path: Path, model, feat_cols, cfg, target_col: str, best_met
         "seq_len": cfg["seq_len"],
         "model_cfg": cfg["model"],
         "target_col": target_col,
+        "label_mode": cfg.get("label_mode", "close_to_next_close"),
+        "label_horizon": cfg.get("label_horizon", 1),
         "best_metric": best_metric,
         "best_epoch": epoch,
     }, path)
@@ -126,12 +129,20 @@ def main() -> None:
     for required_col in ("ts_code", "trade_date", "label"):
         if required_col not in panel.columns:
             raise ValueError(f"{panel_path} is missing required column: {required_col}")
+    label_check = validate_panel_labels(
+        panel,
+        label_mode=cfg.get("label_mode", "close_to_next_close"),
+        label_horizon=cfg.get("label_horizon", 1),
+        tradable_label_filter=cfg.get("tradable_label_filter", True),
+        label_limit_up_pct=cfg.get("label_limit_up_pct", 9.5),
+    )
     feat_cols = feature_columns(panel)
     if not feat_cols:
         raise ValueError("No numeric feature columns found. Check panel construction and feature_columns().")
     print(f"Loaded panel: {panel.shape[0]} rows, {panel.shape[1]} columns")
     print(f"Using {len(feat_cols)} features")
     print(f"Target: {cfg.get('label_mode', 'close_to_next_close')} / {cfg.get('label_horizon', 1)} day(s)")
+    print(f"Label validation: {label_check.to_dict()}")
 
     model, flatten = build_model(cfg["model"], n_features=len(feat_cols), seq_len=cfg["seq_len"])
     target_col = cfg["train"].get("target_col", "label_cs_z")
@@ -420,6 +431,7 @@ def main() -> None:
         "target_col": target_col,
         "label_mode": cfg.get("label_mode", "close_to_next_close"),
         "label_horizon": cfg.get("label_horizon", 1),
+        "label_validation": label_check.to_dict(),
         "model": cfg["model"],
         "loss": loss_name,
     }

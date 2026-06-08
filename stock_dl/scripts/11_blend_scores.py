@@ -13,6 +13,8 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from src.config import load_config
+from src.data.dataset import load_panel
+from src.data.labels import attach_expected_labels
 from src.metrics.ic import daily_ic, ic_summary
 from src.utils.wandb_utils import finish_wandb, init_wandb, wandb_log, wandb_log_artifact, wandb_summary_update
 
@@ -90,6 +92,16 @@ def main() -> None:
     deep = pd.read_csv(deep_fp)
     deep["trade_date"] = deep["trade_date"].astype(str)
     deep = deep.rename(columns={"score": "score_deep"})[["trade_date", "ts_code", "score_deep", "label"]]
+    panel = load_panel(out / "panel.parquet")
+    deep, label_check = attach_expected_labels(
+        deep,
+        panel,
+        label_mode=cfg.get("label_mode", "close_to_next_close"),
+        label_horizon=cfg.get("label_horizon", 1),
+        tradable_label_filter=cfg.get("tradable_label_filter", True),
+        label_limit_up_pct=cfg.get("label_limit_up_pct", 9.5),
+    )
+    label_validation = label_check.to_dict() if label_check is not None else None
 
     lgbm_fp = out / "lgbm_val_predictions.csv"
     lgbm_status_fp = out / "lgbm_status.json"
@@ -102,7 +114,7 @@ def main() -> None:
         final.to_csv(out / "val_predictions.csv", index=False)
         final.to_csv(out / "val_predictions_blend.csv", index=False)
         reason = lgbm_status.get("status", "lgbm predictions not found")
-        meta = {"best_alpha": 1.0, "reason": reason}
+        meta = {"best_alpha": 1.0, "reason": reason, "label_validation": label_validation}
         (out / "blend_meta.json").write_text(json.dumps(meta, indent=2), encoding="utf-8")
         print(f"LightGBM blend skipped ({reason}); final score uses deep model only.")
         return
@@ -118,7 +130,11 @@ def main() -> None:
         final = deep.rename(columns={"score_deep": "score"})
         final.to_csv(out / "val_predictions.csv", index=False)
         final.to_csv(out / "val_predictions_blend.csv", index=False)
-        meta = {"best_alpha": 1.0, "reason": "deep/lgbm predictions have no overlap"}
+        meta = {
+            "best_alpha": 1.0,
+            "reason": "deep/lgbm predictions have no overlap",
+            "label_validation": label_validation,
+        }
         (out / "blend_meta.json").write_text(json.dumps(meta, indent=2), encoding="utf-8")
         print("No overlap between deep and LightGBM predictions; final score uses deep model only.")
         return
@@ -167,6 +183,7 @@ def main() -> None:
         "top_k": top_k,
         "ic_mean": best_stats.get("ic_mean", 0.0),
         "topk_excess": best_stats.get("topk_excess", 0.0),
+        "label_validation": label_validation,
         "alpha_search": rows,
     }
     (out / "blend_meta.json").write_text(json.dumps(meta, indent=2, ensure_ascii=False), encoding="utf-8")
