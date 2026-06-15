@@ -50,11 +50,13 @@ if [ -z "$SCHEME" ]; then
     if [ "$scheme_choice" = "1" ]; then
         SCHEME="a"
         SCHEME_NAME="方案A(纯DL)"
-        CONFIG_FILE="local_scheme_a.yaml"
+        CONFIG_FILE="server_8h_scheme_a_short.yaml"
+        OUTPUT_DIR="outputs_server8h_scheme_a_short"
     else
         SCHEME="b"
         SCHEME_NAME="方案B(DL+LGBM)"
-        CONFIG_FILE="local_scheme_b.yaml"
+        CONFIG_FILE="server_8h_scheme_b_short.yaml"
+        OUTPUT_DIR="outputs_server8h_scheme_b_short"
     fi
 
     echo ""
@@ -75,10 +77,12 @@ else
     # 命令行参数模式
     if [ "$SCHEME" = "a" ]; then
         SCHEME_NAME="方案A(纯DL)"
-        CONFIG_FILE="local_scheme_a.yaml"
+        CONFIG_FILE="server_8h_scheme_a_short.yaml"
+        OUTPUT_DIR="outputs_server8h_scheme_a_short"
     elif [ "$SCHEME" = "b" ]; then
         SCHEME_NAME="方案B(DL+LGBM)"
-        CONFIG_FILE="local_scheme_b.yaml"
+        CONFIG_FILE="server_8h_scheme_b_short.yaml"
+        OUTPUT_DIR="outputs_server8h_scheme_b_short"
     else
         echo -e "${RED}错误: 方案必须是 'a' 或 'b'${NC}"
         exit 1
@@ -102,6 +106,7 @@ echo ""
 echo -e "${GREEN}运行参数:${NC}"
 echo "  方案: $SCHEME_NAME"
 echo "  配置: configs/$CONFIG_FILE"
+echo "  输出: $OUTPUT_DIR"
 echo "  持仓: ${HOLDINGS:-无}"
 echo "  持仓单位: $HOLDINGS_UNIT"
 echo "  资产: ${PORTFOLIO} 元"
@@ -131,7 +136,7 @@ echo -e "==============================================${NC}"
 echo ""
 echo "下一步操作:"
 echo "1. 查看生成的交易指南:"
-echo "   cat stock_dl/outputs_scheme_a/trading_guides/$(date +%Y%m%d)/trading_guide.txt"
+echo "   cat stock_dl/$OUTPUT_DIR/trading_guides/$(date +%Y%m%d)/trading_guide.txt"
 echo "2. 在同花顺模拟账户中按指南下单"
 echo "3. 收盘后记录实际成交"
 echo ""

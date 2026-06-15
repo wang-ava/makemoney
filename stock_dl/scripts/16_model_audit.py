@@ -14,6 +14,7 @@ sys.path.insert(0, str(ROOT))
 
 from src.config import load_config
 from src.data.dataset import load_panel
+from src.data.labels import validate_panel_labels
 
 
 WINDOWS = (0, 120, 60, 20, 10, 5)
@@ -242,6 +243,14 @@ def main() -> None:
     pred = pd.read_csv(pred_fp)
     pred["trade_date"] = pred["trade_date"].astype(str)
     panel = _load_panel_for_audit(out)
+    panel_label_check = validate_panel_labels(
+        panel,
+        label_mode=cfg.get("label_mode", "close_to_next_close"),
+        label_horizon=cfg.get("label_horizon", 1),
+        tradable_label_filter=cfg.get("tradable_label_filter", True),
+        label_limit_up_pct=cfg.get("label_limit_up_pct", 9.5),
+        raise_on_error=False,
+    )
     audit_labels = _add_tradable_labels(panel, int(cfg.get("label_horizon", 1)), float(cfg.get("label_limit_up_pct", 9.5)))
     df = pred.merge(audit_labels, on=["trade_date", "ts_code"], how="left")
 
@@ -278,6 +287,7 @@ def main() -> None:
         "output_dir": str(out),
         "label_mode": cfg.get("label_mode", "close_to_next_close"),
         "label_horizon": cfg.get("label_horizon", 1),
+        "panel_label_validation": panel_label_check.to_dict(),
         "audit_top_k": primary_top_k,
         "stored_ic_mean": float(stored_ic["ic"].mean()) if not stored_ic.empty else 0.0,
         "tradable_ic_mean": float(tradable_ic["ic"].mean()) if not tradable_ic.empty else 0.0,

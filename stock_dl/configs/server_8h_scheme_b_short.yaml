@@ -9,9 +9,9 @@ data_dir_glob:
   - "documents-export-*"
 output_dir: outputs_server8h_scheme_b_short
 start_date: "20200101"
-end_date: "20260529"
+end_date: auto
 train_end: "20241231"
-val_end: "20260529"
+val_end: auto
 universe: all
 seq_len: 20
 label_horizon: 1

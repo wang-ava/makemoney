@@ -13,7 +13,7 @@
 
 用法:
     python scripts/14_generate_trading_guide.py \
-        --config configs/local_scheme_a.yaml \
+        --config configs/server_8h_scheme_a_short.yaml \
         --holdings "000001.SZ:1000,600000.SH:500" \
         --portfolio-value 1000000
 """
@@ -35,6 +35,7 @@ sys.path.insert(0, str(ROOT))
 
 from src.config import load_config
 from src.data.features import add_features, feature_columns
+from src.data.labels import validate_checkpoint_label_config, validate_panel_labels
 from src.data.panel import build_panel
 from src.models.factory import build_model_from_checkpoint
 
@@ -43,17 +44,17 @@ from src.models.factory import build_model_from_checkpoint
 # 历史回测最优交易策略（A/B 共用，模型分数仍各用各的）
 # ============================================================================
 
-OPTIMAL_STRATEGY_PROFILE = "live_defensive_capital_protection_20260603"
+OPTIMAL_STRATEGY_PROFILE = "live_aggressive_top25_net_rebalance_20260608"
 OPTIMAL_STRATEGY_OVERRIDES = {
-    # Live defensive profile: protect capital first.  The historical n=70/98%
-    # profile performed well in backtests but was too aggressive for manual
-    # trading after a position-resync mismatch.
+    # Aggressive live comparison profile:
+    # keep only the model's strongest Top-25 names, but rebalance by net shares.
+    # Existing holdings that remain in Top-25 are not force-sold and rebought.
     "adaptive_hold": False,
     "adaptive_hold_multi_indicator": False,
-    "n_hold": 50,
-    "k_trade": 1,
-    "dynamic_k": True,
-    "dynamic_k_max": 2,
+    "n_hold": 25,
+    "k_trade": 25,
+    "dynamic_k": False,
+    "dynamic_k_max": 25,
     "score_gap_trigger": True,
     "score_gap_trigger_threshold": 0.08,
     "min_amount_quantile": 0.35,
@@ -63,11 +64,11 @@ OPTIMAL_STRATEGY_OVERRIDES = {
     "max_ret_cut": 5.0,
     "min_momentum_rank": 0.35,
     "sell_outsiders": True,
-    "sell_outsiders_mode": "bad",
-    "sell_outsiders_unlimited": False,
-    "sell_outsiders_max": 1,
-    "resync_on_mismatch": False,
-    "resync_sell_all_outsiders": False,
+    "sell_outsiders_mode": "all",
+    "sell_outsiders_unlimited": True,
+    "sell_outsiders_max": 25,
+    "resync_on_mismatch": True,
+    "resync_sell_all_outsiders": True,
     "amplify_buys": False,
     "hand_expand_enabled": False,
     "topup_enabled": False,
@@ -1472,6 +1473,11 @@ def main():
         sys.exit(1)
 
     ckpt = torch.load(ckpt_path, map_location=device, weights_only=True)
+    validate_checkpoint_label_config(
+        ckpt,
+        label_mode=cfg.get("label_mode", "close_to_next_close"),
+        label_horizon=cfg.get("label_horizon", 1),
+    )
     print(f"✓ 模型加载成功")
 
     # 构建面板
@@ -1494,7 +1500,16 @@ def main():
         cross_section_rank=cfg["features"]["cross_section_rank"],
         label_horizon=cfg.get("label_horizon", 1),
         label_mode=cfg.get("label_mode", "close_to_next_close"),
+        tradable_label_filter=cfg.get("tradable_label_filter", True),
+        label_limit_up_pct=cfg.get("label_limit_up_pct", 9.5),
         fill_missing=cfg["features"].get("fill_missing", True),
+    )
+    validate_panel_labels(
+        panel,
+        label_mode=cfg.get("label_mode", "close_to_next_close"),
+        label_horizon=cfg.get("label_horizon", 1),
+        tradable_label_filter=cfg.get("tradable_label_filter", True),
+        label_limit_up_pct=cfg.get("label_limit_up_pct", 9.5),
     )
 
     feat_cols = ckpt.get("feat_cols") or feature_columns(panel)

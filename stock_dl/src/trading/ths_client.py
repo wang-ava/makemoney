@@ -165,13 +165,33 @@ class ThsClient:
             raise ThsAPIError(f"THS updateclass failed: {payload}")
         return result
 
+    @staticmethod
+    def _require_update_result(result: dict[str, Any], key: str, action: str) -> dict[str, Any]:
+        block = result.get(key)
+        if not isinstance(block, dict):
+            raise ThsAPIError(f"THS {action} failed: missing {key} in response")
+
+        data = block.get("result")
+        if data is None:
+            error_code = block.get("errorcode")
+            message = block.get("errormsg") or block.get("message") or "empty result"
+            raise ThsAPIError(f"THS {action} failed: {message} (errorcode={error_code})")
+        if not isinstance(data, dict):
+            raise ThsAPIError(f"THS {action} failed: unexpected {key} result shape")
+        return data
+
     def get_fund(self) -> dict[str, Any]:
         result = self._updateclass("cmd_wt_mairu", "qryzijin|")
-        return result["qryzijin"]["result"]["data"]
+        fund_result = self._require_update_result(result, "qryzijin", "fund query")
+        data = fund_result.get("data")
+        if not isinstance(data, dict):
+            raise ThsAPIError("THS fund query failed: missing fund data")
+        return data
 
     def get_positions(self) -> list[ThsPosition]:
         result = self._updateclass("cmd_wt_mairu", "qryzijin|qryChicang|")
-        rows = result["qryChicang"]["result"].get("list", [])
+        position_result = self._require_update_result(result, "qryChicang", "position query")
+        rows = position_result.get("list", [])
         positions = [
             ThsPosition(
                 stock_code=row.get("d_2102", ""),
@@ -194,7 +214,8 @@ class ThsClient:
 
     def get_orders(self) -> list[ThsOrder]:
         result = self._updateclass("cmd_qu_chedan", "qryzijin|qryChedan|")
-        rows = result["qryChedan"]["result"].get("list", [])
+        order_result = self._require_update_result(result, "qryChedan", "order query")
+        rows = order_result.get("list", [])
         return [
             ThsOrder(
                 time=row.get("d_2140", ""),

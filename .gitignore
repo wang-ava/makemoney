@@ -6,14 +6,30 @@ __pycache__/
 venv/
 env/
 .env
+.pytest_cache/
+wandb/
+*.log
+*.out
+*.err
+*.aux
+*.fdb_latexmk
+*.fls
+*.synctex.gz
+*.toc
+*.xdv
 
 # Large exported datasets and archives.
 /documents-export-2026-5-19/
 /documents-export-2026-5-19.zip
 /A股数据/
 /astock_data_*.tar.gz
+/PB23061103-*/
+/finalex-wrong/
 
 # Generated experiment artifacts.
+/analysis_outputs/
+/doc/figures/
+/doc/generated_daily_profit_table.tex
 /stock_dl/outputs/
 /stock_dl/outputs_quick/
 /stock_dl/outputs_scheme_a/
@@ -22,17 +38,13 @@ env/
 /stock_dl/outputs_tuning*/
 /stock_dl/backtest_inputs/
 /stock_dl/backtest_results/
+/stock_dl/logs/
 /outputs/
 *.parquet
 *.pt
 
 # Local result archives.
 *.zip
-
-# Large local best-trial artifacts; keep metrics, configs and figures tracked.
-/best-trails/.DS_Store
-/best-trails/model.pt
-/best-trails/val_predictions*.csv
 
 # Local W&B export.
 Untitled Report _ my-awesome-project*.pdf

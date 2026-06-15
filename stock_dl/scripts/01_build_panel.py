@@ -10,9 +10,10 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from src.config import load_config
-from src.data.features import add_features
-from src.data.panel import build_panel
 from src.data.dataset import save_panel
+from src.data.features import add_features
+from src.data.labels import validate_panel_labels
+from src.data.panel import build_panel
 
 
 def main() -> None:
@@ -40,10 +41,18 @@ def main() -> None:
         label_limit_up_pct=cfg.get("label_limit_up_pct", 9.5),
         fill_missing=cfg["features"].get("fill_missing", True),
     )
+    label_check = validate_panel_labels(
+        panel,
+        label_mode=cfg.get("label_mode", "close_to_next_close"),
+        label_horizon=cfg.get("label_horizon", 1),
+        tradable_label_filter=cfg.get("tradable_label_filter", True),
+        label_limit_up_pct=cfg.get("label_limit_up_pct", 9.5),
+    )
 
     out = Path(cfg["output_dir"]) / "panel.parquet"
     save_panel(panel, out)
     print(f"Saved panel: {out} shape={panel.shape}")
+    print(f"Label validation: {label_check.to_dict()}")
 
 
 if __name__ == "__main__":

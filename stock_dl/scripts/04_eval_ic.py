@@ -12,6 +12,8 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from src.config import load_config
+from src.data.dataset import load_panel
+from src.data.labels import attach_expected_labels
 from src.metrics.ic import daily_ic, daily_pearson_ic, direction_accuracy, ic_summary
 from src.utils.wandb_utils import finish_wandb, init_wandb, wandb_log, wandb_log_artifact, wandb_summary_update
 
@@ -24,6 +26,15 @@ def main() -> None:
     out = Path(cfg["output_dir"])
 
     pred = pd.read_csv(out / "val_predictions.csv")
+    panel = load_panel(out / "panel.parquet")
+    pred, label_check = attach_expected_labels(
+        pred,
+        panel,
+        label_mode=cfg.get("label_mode", "close_to_next_close"),
+        label_horizon=cfg.get("label_horizon", 1),
+        tradable_label_filter=cfg.get("tradable_label_filter", True),
+        label_limit_up_pct=cfg.get("label_limit_up_pct", 9.5),
+    )
     scores = pred.rename(columns={"score": "value"})[["trade_date", "ts_code", "value"]]
     labels = pred.rename(columns={"label": "value"})[["trade_date", "ts_code", "value"]]
 
@@ -31,6 +42,10 @@ def main() -> None:
     pearson_ic_df = daily_pearson_ic(scores, labels)
     summary = ic_summary(ic_df)
     summary.update(direction_accuracy(scores, labels))
+    if label_check is not None:
+        summary["label_bad_ratio"] = label_check.bad_ratio
+        summary["label_mean_abs_diff"] = label_check.mean_abs_diff
+        summary["label_max_abs_diff"] = label_check.max_abs_diff
     if not pearson_ic_df.empty:
         pearson_std = pearson_ic_df["pearson_ic"].std()
         summary["pearson_ic_mean"] = float(pearson_ic_df["pearson_ic"].mean())

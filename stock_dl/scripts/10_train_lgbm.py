@@ -12,6 +12,7 @@ sys.path.insert(0, str(ROOT))
 from src.config import load_config
 from src.data.dataset import load_panel
 from src.data.features import feature_columns
+from src.data.labels import validate_panel_labels
 from src.models.lgbm_ranker import (
     predict_ranker,
     prepare_ranker_frame,
@@ -44,6 +45,13 @@ def main() -> None:
         return
 
     panel = load_panel(out / "panel.parquet")
+    label_check = validate_panel_labels(
+        panel,
+        label_mode=cfg.get("label_mode", "close_to_next_close"),
+        label_horizon=cfg.get("label_horizon", 1),
+        tradable_label_filter=cfg.get("tradable_label_filter", True),
+        label_limit_up_pct=cfg.get("label_limit_up_pct", 9.5),
+    )
     feat_cols = feature_columns(panel)
     if not feat_cols:
         raise ValueError("No numeric feature columns found for LightGBM.")
@@ -59,6 +67,7 @@ def main() -> None:
         f"LightGBM LambdaRank: train={train_df.shape}, val={val_df.shape}, "
         f"features={len(feat_cols)}, relevance={relevance_min}..{relevance_max}/{relevance_bins - 1}"
     )
+    print(f"Label validation: {label_check.to_dict()}")
 
     wandb_run = init_wandb(
         cfg,
@@ -84,6 +93,9 @@ def main() -> None:
         "best_iteration": int(getattr(model, "best_iteration", 0) or 0),
         "best_score": getattr(model, "best_score", {}),
         "config": lgbm_cfg,
+        "label_mode": cfg.get("label_mode", "close_to_next_close"),
+        "label_horizon": cfg.get("label_horizon", 1),
+        "label_validation": label_check.to_dict(),
     }
     (out / "lgbm_meta.json").write_text(json.dumps(meta, indent=2, ensure_ascii=False), encoding="utf-8")
     (out / "lgbm_status.json").write_text(json.dumps({"status": "ok"}, indent=2), encoding="utf-8")
